@@ -97,5 +97,6 @@
 | 2026-10-25 16:30 | CI Pipeline | Created reproducible GitHub Actions workflow `.github/workflows/build-vianshield.yml`. | Complete |
 | 2026-10-25 16:45 | Verification | Ran `:app:testDebugUnitTest` (all 8 tests passed) & verified `compile_applet`. | Complete |
 | 2026-10-25 22:35 | Phase 1.5 | Audited real upstream libbox API: corrected openTun detachFd flow, implemented protect(fd) socket loop prevention, aligned GitHub Actions build_libbox with recursive submodules, and enforced truthful native presence checking. | Complete |
+| 2026-10-25 23:15 | CI Fix | Resolved :app:validateSigningDebug on missing keystore: implemented standard AGP debug signing fallback, removed unnecessary Google Services plugin, and guarded artifact upload. | Complete |
 
 

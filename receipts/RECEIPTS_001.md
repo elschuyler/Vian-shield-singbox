@@ -90,3 +90,23 @@
   - Physical on-device execution: pending (requires physical hardware).
 * **Any deviation from what was requested, and why:** None. Critical lifecycle corrections implemented without scope creep into Phase 2 features.
 * **Any known issue or follow-up needed:** CI workflow must be executed on GitHub to compile the actual `libbox.aar` binary and place it in `app/libs/`.
+
+## Entry: 2026-10-25T23:16:15-07:00
+* **Request:** CI Fix — debug signing failure only. Resolve `:app:validateSigningDebug` failure on missing keystore, evaluate Google Services, guard artifact upload, preserve libbox.aar.
+* **Exact files touched:**
+  - `/app/build.gradle.kts`
+  - `/.github/workflows/build-vianshield.yml`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_001.md`
+* **What was actually done:**
+  1. Inspected cause of `:app:validateSigningDebug` failure: `buildTypes.debug` statically referenced `signingConfigs.debugConfig` which pointed to `${rootDir}/debug.keystore`. In clean CI runners, that gitignored file does not exist, causing AGP signing validation to abort the build.
+  2. Updated `app/build.gradle.kts` so that `buildTypes.debug` checks whether the custom keystore exists: if present (local emulator/dev), it uses `debugConfig`; if absent (CI runner), it falls back to AGP's standard built-in `debug` signing configuration (`~/.android/debug.keystore`, auto-created by AGP).
+  3. Inspected `google-services.json` requirement: confirmed Vianshield has zero code referencing Firebase. Safely removed the unused `google.services` Gradle plugin and commented out unused Firebase dependencies.
+  4. Updated `.github/workflows/build-vianshield.yml` to check for debug APK existence via `id: check_apk` with `if: always()`, uploading `app-debug.apk` only if the file exists, and failing clearly if the APK build itself fails, while keeping `libbox.aar` intact.
+* **How it was verified:**
+  - Tested `gradle :app:validateSigningDebug` with `DEBUG_KEYSTORE_PATH=/tmp/nonexistent.keystore`: passed cleanly in 14s using AGP standard debug signing fallback.
+  - Tested `gradle :app:testDebugUnitTest`: passed all 9 tests in 1m 32s with zero Google Services warnings.
+  - Tested `compile_applet`: succeeded with 0 errors in 32s.
+  - Remote GitHub Actions execution: pending push to GitHub.
+* **Any deviation from what was requested, and why:** None. Surgical fix applied strictly to debug signing, unused plugin removal, and artifact guards.
+* **Any known issue or follow-up needed:** Ready for remote GitHub Actions run.
