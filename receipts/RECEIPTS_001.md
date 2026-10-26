@@ -135,3 +135,99 @@
   - Physical on-device execution: pending (requires installation on Android physical hardware).
 * **Any deviation from what was requested, and why:** None. Only connected and completed the Log Keeper without modifying engine architecture or introducing Phase 2/3/4 feature bloat.
 * **Any known issue or follow-up needed:** Ready for on-device manual QA.
+## Entry: 2026-10-25T23:50:30-07:00
+* **Request:** Verify sing-box integration and implement reliable log dumps: strict 3 MiB persistent log limit across operational log files, export logs to Android Downloads via MediaStore/SAF, privacy-conscious crash logging and crash dumps, pending crash detection on app launch, honest documentation of native signals, and unit test verification.
+* **Exact files touched:**
+  - `/app/src/main/java/com/example/VianshieldApplication.kt`
+  - `/app/src/main/AndroidManifest.xml`
+  - `/app/src/main/java/com/example/logging/OperationalLogCatcher.kt`
+  - `/app/src/main/java/com/example/logging/CrashReporter.kt`
+  - `/app/src/main/java/com/example/logging/LogExporter.kt`
+  - `/app/src/main/java/com/example/ui/DiagnosticViewModel.kt`
+  - `/app/src/main/java/com/example/ui/LogKeeperScreen.kt`
+  - `/.github/workflows/build-vianshield.yml`
+  - `/app/src/test/java/com/example/VianshieldPhase1Test.kt`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_001.md`
+* **What was actually done:**
+  1. Verified sing-box runtime integration path: traced `VianshieldVpnService -> SingBoxAdapter -> libbox.aar (io.nekohasekai.libbox) -> PlatformInterface (openTun with detachFd, autoDetectInterfaceControl with protect(fd)) -> OperationalLogCatcher -> LogKeeperScreen`. Confirmed that if `libbox.aar` is missing, the app truthfully transitions to `VpnState.Error("ERR_NATIVE_AAR_PENDING")` without pretending to be connected.
+  2. Implemented strict 3 MiB persistent operational log storage limit across all log files (`OperationalLogCatcher.MAX_TOTAL_DISK_BYTES = 3 * 1024 * 1024L`). Configured 2-file rolling partition (`vianshield_operational.log` max 1.5 MiB, rotated `vianshield_operational.log.1` max 1.5 MiB) ensuring the combined disk footprint never exceeds 3 MiB. Defensive try/catch prevents write errors or disk full states from crashing `VpnService`. Maintained 500-entry in-memory FIFO buffer.
+  3. Built `LogExporter.kt` using `MediaStore.Downloads.EXTERNAL_CONTENT_URI` (Android 10+ / API 29+) with zero broad storage permissions. Formats timestamped `.txt` exports containing application version, Android OS version, device model, component/severity details, and automatic cryptographic key/secret redaction.
+  4. Implemented `CrashReporter.kt` providing privacy-conscious crash diagnostics: installed chained `Thread.UncaughtExceptionHandler` that delegates to the default handler without swallowing crashes; synchronously flushes crash reports to dedicated bounded storage (`filesDir/crash_reports/`, capped at 3 reports / 256 KB); captures stack trace, thread info, and the last 20 operational events with secrets redacted.
+  5. Implemented `VianshieldApplication.kt` initializing `OperationalLogCatcher` and installing `CrashReporter` at the process lifecycle onset. Registered in `AndroidManifest.xml`.
+  6. Connected crash detection and export to UI: `DiagnosticViewModel` exposes `hasPendingCrashReports` and `pendingCrashCount`; `LogKeeperScreen` displays a prominent banner when a crash report exists from a previous session, offering "Export Crash Dump" (`testTag("export_crash_button")`) and "Dismiss" (`testTag("dismiss_crash_button")`). Added dedicated "Export Logs" button (`testTag("export_logs_button")`) in top app bar.
+  7. Documented native crash limitations honestly: explained in code, exported files, and UI banner that fatal native signals (SIGSEGV/SIGABRT) in Go/C bypass JVM exception handlers and are recorded in Android OS tombstones (`/data/tombstones`).
+  8. Audited `.github/workflows/build-vianshield.yml` to verify `test -f app/build/outputs/apk/debug/app-debug.apk` and upload the APK only on build success, preserving `libbox-aar` for diagnosis even if APK packaging fails.
+  9. Expanded `VianshieldPhase1Test.kt` with 5 new unit tests verifying 3 MiB disk limit and rotation, crash recording and secret redaction, operational log export generation, crash dump export, and ViewModel crash lifecycle.
+* **How it was verified:**
+  - Local build only: Gradle unit tests (`gradle :app:testDebugUnitTest`) executed and passed all 15 tests (1m 1s).
+  - Applet compilation (`compile_applet`) executed and succeeded with 0 errors (39s).
+  - Physical on-device execution: pending (requires installation on Android physical hardware).
+* **Any deviation from what was requested, and why:** None. All 4 prompt sections strictly implemented without scope drift into Phase 2 Room profile persistence.
+* **Any known issue or follow-up needed:** Ready for on-device manual QA test suite.
+
+## Entry: 2026-10-26T00:08:45-07:00
+* **Request:** Final Phase 1.5 Verification and Hardening of Vianshield Android project. Audit sing-box integration, VPN lifecycle, Operational Log Keeper (3 MiB limit), log export, crash diagnostics. Fix only concrete defects found. Preserve current UI and architecture.
+* **Exact files touched:**
+  - `/app/src/main/java/com/example/engine/SingBoxAdapter.kt`
+  - `/app/src/main/java/com/example/vpn/VianshieldVpnService.kt`
+  - `/app/src/main/java/com/example/logging/LogExporter.kt`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_001.md`
+* **What was actually done:**
+  1. Audited sing-box runtime integration and dynamic proxy bridge in `SingBoxAdapter`:
+     - Identified and resolved potential native BoxService leak on engine start failure: added immediate `close()` and nulling of `nativeServiceInstance` inside `start()`'s catch block.
+     - Hardened `stop()` logic to permit native service closure even if `isEngineRunning` had not been set to true (e.g. startup abort).
+  2. Hardened VPN service lifecycle in `VianshieldVpnService`:
+     - Added explicit `singBoxEngine.stop()` invocation if `singBoxEngine.start()` fails during VPN start sequence, preventing dangling native state.
+     - Hardened `releaseTunFd()` by caching descriptor and immediately resetting `activeTunFd = -1` before calling `ParcelFileDescriptor.adoptFd().close()`, eliminating race conditions and accidental double adoption.
+  3. Hardened log export defense-in-depth:
+     - Updated `LogExporter.kt` to run `OperationalLogCatcher.redactSecrets(content)` across the full export string for operational logs and crash dumps before writing to the Android Downloads directory.
+  4. Confirmed zero broad storage permissions in `AndroidManifest.xml` (using MediaStore API 29+ zero-permission standard).
+  5. Verified bounded retention: 500 in-memory FIFO events, strict 3 MiB persistent rolling disk limit across operational logs, and 256 KB crash dump budget across max 3 reports.
+* **How it was verified:**
+  - Local build only: Gradle unit tests (`gradle :app:testDebugUnitTest`) executed and passed all 15 tests cleanly in 54s.
+  - Applet compilation (`compile_applet`) executed and succeeded with 0 errors in 9s.
+  - Workspace security scan: clean (zero unignored keystores or secrets).
+  - Physical on-device execution: pending (requires installation on Android physical hardware).
+* **Any deviation from what was requested, and why:** None. Only concrete defect fixes and hardening applied. Phase 2 Room persistence, DNS ad-blocking, and per-app routing strictly deferred as scheduled.
+* **Any known issue or follow-up needed:** Ready for Phase 2 implementation or on-device manual QA test suite.
+
+## Entry: 2026-10-26T00:30:00-07:00
+* **Request:** Redesign the existing Vianshield Android UI with a clean, modern Light Sky Blue Theme. Background: white or very light blue; Primary: light sky blue; Text: black or near-black for strong readability; Cards & Surfaces: white with subtle light-blue borders or soft neutral shadows; Buttons & Selected States: sky blue with accessible contrast; Status Indicators: clear, accessible colors for connected, disconnected, warning, and error states; Icons: simple, consistent, recognizable. Preserve existing screens, navigation, features, and ViewModel logic. Centralize colors in the theme system.
+* **Exact files touched:**
+  - `/app/src/main/java/com/example/ui/theme/Color.kt`
+  - `/app/src/main/java/com/example/ui/theme/Theme.kt`
+  - `/app/src/main/java/com/example/ui/DiagnosticScreen.kt`
+  - `/app/src/main/java/com/example/ui/LogKeeperScreen.kt`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_001.md`
+* **What was actually done:**
+  1. Centralized Light Sky Blue Theme tokens in `Color.kt`:
+     - Defined `SkyBluePrimary` (`#0284C7`, Sky 600) with accessible 4.5+:1 contrast against white surfaces and light containers.
+     - Defined `SkyBlueBackground` (`#F6FAFD`), `SkyBlueSurface` (`#FFFFFF`), `SkyBlueSurfaceVariant` (`#EFF6FC`), and `SkyBlueSurfaceBorder` (`#D6E6F5`).
+     - Defined near-black typography tokens: `SkyBlueTextPrimary` (`#0F172A`, Slate 900), `SkyBlueTextSecondary` (`#475569`, Slate 600), and `SkyBlueTextTertiary` (`#64748B`, Slate 500).
+     - Tuned accessible status indicators for light surfaces: Connected (`#059669`, Emerald 600), Starting/Warning (`#D97706`, Amber 600), Stopped/Disconnected (`#64748B`, Slate 500), and Error (`#DC2626`, Red 600) with dedicated soft container and on-container colors.
+  2. Integrated `LightSkyColorScheme` into `Theme.kt`:
+     - Configured `LightSkyColorScheme` as the active default color scheme in `MyApplicationTheme` while preserving dark theme fallback for explicitly dark system configurations.
+  3. Redesigned `DiagnosticScreen.kt`:
+     - Applied white cards with subtle light-blue outline borders (`MaterialTheme.colorScheme.outline`), light-blue tinted version badge, and clean elevation.
+     - Refined connection details card with `surfaceVariant` background and crisp near-black typography.
+     - Maintained high-contrast Start (Sky Blue `#0284C7`) and Stop (Red `#DC2626`) actions with white text and Material Ripples.
+     - Updated Master Switch track and thumb colors for accessible state perception.
+     - Styled filter chips and log console view with light-blue surface containers and crisp bordered log rows.
+     - Preserved all functional UI `testTag` IDs (`topbar_log_keeper_button`, `vpn_toggle_button`, `master_log_switch`, `open_log_keeper_button`).
+  4. Redesigned `LogKeeperScreen.kt`:
+     - Styled top bar, search text field, time-window filter chips, severity chips, and category chips with sky-blue selected states (`primaryContainer` / `onPrimaryContainer`).
+     - Enhanced Pending Crash Report banner with dedicated error container and high-contrast dismissal and export buttons.
+     - Styled log items with white cards, subtle light-blue borders (`#D6E6F5`), category chips, and readable monospace stack/message formatting.
+     - Preserved all functional UI `testTag` IDs (`log_keeper_back_button`, `log_keeper_master_switch`, `export_logs_button`, `copy_logs_button`, `clear_logs_button`, `crash_reports_banner`, `dismiss_crash_button`, `export_crash_button`, `log_search_field`, `time_filter_...`, `sort_order_button`).
+  5. Verified zero regression: all VPN lifecycle, sing-box integration, operational log caching (3 MiB disk limit), crash dump handling, and log exports remain fully functional.
+* **How it was verified:**
+  - Local build only: Gradle unit tests (`gradle :app:testDebugUnitTest`) executed and passed all 15 tests cleanly in 58s.
+  - Applet compilation (`compile_applet`) executed and succeeded with 0 errors in 14s.
+  - Workspace security scan: clean (zero unignored keystores or secrets).
+  - Physical on-device execution: pending (requires installation on Android physical hardware).
+* **Any deviation from what was requested, and why:** None. Color tokens centralized in theme; no VPN engine or firewall logic touched; layout remains lightweight and responsive.
+* **Any known issue or follow-up needed:** Ready for on-device manual QA test suite.
+

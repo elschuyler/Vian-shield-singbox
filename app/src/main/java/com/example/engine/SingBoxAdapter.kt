@@ -177,6 +177,11 @@ class SingBoxAdapter(
                 val err = "Native sing-box BoxService failed to start: ${e.message}"
                 OperationalLogCatcher.error(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", err)
                 platformCallback?.onError("ERR_START_FAILED", err)
+                try {
+                    val closeMethod = service.javaClass.methods.firstOrNull { it.name.equals("close", ignoreCase = true) }
+                    closeMethod?.invoke(service)
+                } catch (_: Exception) {}
+                nativeServiceInstance = null
                 Result.failure(e)
             }
         }
@@ -193,7 +198,7 @@ class SingBoxAdapter(
     }
 
     override fun stop(): Result<Unit> {
-        if (!isEngineRunning.get()) {
+        if (!isEngineRunning.get() && nativeServiceInstance == null) {
             OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "Sing-box engine is already stopped (duplicate stop suppressed)")
             return Result.success(Unit)
         }
@@ -207,6 +212,7 @@ class SingBoxAdapter(
             } catch (e: Exception) {
                 val err = "Exception while closing native BoxService: ${e.message}"
                 OperationalLogCatcher.warn(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", err)
+                nativeServiceInstance = null
             }
         }
 

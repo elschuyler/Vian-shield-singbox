@@ -25,9 +25,13 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SwapVert
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -86,6 +90,8 @@ fun LogKeeperScreen(
     val selectedCategory by viewModel.selectedCategory.collectAsState()
     val selectedSeverity by viewModel.selectedSeverity.collectAsState()
     val sortNewestFirst by viewModel.sortNewestFirst.collectAsState()
+    val hasPendingCrashReports by viewModel.hasPendingCrashReports.collectAsState()
+    val pendingCrashCount by viewModel.pendingCrashCount.collectAsState()
 
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
@@ -138,19 +144,38 @@ fun LogKeeperScreen(
                         )
                     }
 
-                    // Copy / Export
+                    // Export Logs to Downloads
+                    IconButton(
+                        onClick = {
+                            val res = viewModel.exportLogsToDownloads()
+                            if (res.isSuccess) {
+                                Toast.makeText(context, res.getOrThrow(), Toast.LENGTH_LONG).show()
+                            } else {
+                                Toast.makeText(context, "Export failed: ${res.exceptionOrNull()?.message}", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier.testTag("export_logs_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.FileDownload,
+                            contentDescription = stringResource(R.string.btn_export_logs),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    // Copy to Clipboard
                     IconButton(
                         onClick = {
                             val exported = viewModel.exportLogs()
                             clipboardManager.setText(AnnotatedString(exported))
                             Toast.makeText(context, context.getString(R.string.logs_copied_toast), Toast.LENGTH_SHORT).show()
                         },
-                        modifier = Modifier.testTag("export_logs_button")
+                        modifier = Modifier.testTag("copy_logs_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.ContentCopy,
-                            contentDescription = stringResource(R.string.btn_export_logs),
-                            tint = MaterialTheme.colorScheme.primary
+                            contentDescription = "Copy Logs",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 
@@ -170,7 +195,10 @@ fun LogKeeperScreen(
                     }
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    titleContentColor = MaterialTheme.colorScheme.onSurface,
+                    navigationIconContentColor = MaterialTheme.colorScheme.onSurface,
+                    actionIconContentColor = MaterialTheme.colorScheme.primary
                 )
             )
         }
@@ -182,6 +210,88 @@ fun LogKeeperScreen(
                 .padding(horizontal = 16.dp)
         ) {
             Spacer(modifier = Modifier.height(8.dp))
+
+            // Pending Crash Report Banner
+            if (hasPendingCrashReports) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp)
+                        .testTag("crash_reports_banner"),
+                    shape = RoundedCornerShape(12.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f)),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = "Crash Detected",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Previous Crash Detected ($pendingCrashCount pending)",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "An uncaught exception occurred in a previous session. Diagnostic stack trace and pre-crash events have been preserved with secrets redacted.",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.End,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.dismissCrashReports()
+                                    Toast.makeText(context, "Crash reports dismissed", Toast.LENGTH_SHORT).show()
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.4f)),
+                                modifier = Modifier.testTag("dismiss_crash_button")
+                            ) {
+                                Text("Dismiss", fontSize = 11.sp, color = MaterialTheme.colorScheme.onErrorContainer)
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Button(
+                                onClick = {
+                                    val res = viewModel.exportCrashReportsToDownloads()
+                                    if (res.isSuccess) {
+                                        Toast.makeText(context, res.getOrThrow(), Toast.LENGTH_LONG).show()
+                                    } else {
+                                        Toast.makeText(context, "Export failed: ${res.exceptionOrNull()?.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor = Color.White
+                                ),
+                                modifier = Modifier.testTag("export_crash_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.FileDownload,
+                                    contentDescription = "Export Crash",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Export Crash Dump", fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+            }
 
             // Search Bar
             OutlinedTextField(
@@ -231,7 +341,10 @@ fun LogKeeperScreen(
                             onClick = { viewModel.setTimeFilter(filter) },
                             label = { Text(filter.label, fontSize = 11.sp) },
                             modifier = Modifier.testTag("time_filter_${filter.name.lowercase()}"),
-                            colors = FilterChipDefaults.filterChipColors()
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
                         )
                     }
                 }
@@ -241,17 +354,20 @@ fun LogKeeperScreen(
                     onClick = { viewModel.toggleSortOrder() },
                     modifier = Modifier.testTag("sort_order_button"),
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                     shape = RoundedCornerShape(8.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.SwapVert,
                         contentDescription = "Sort Order",
+                        tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
                         text = if (sortNewestFirst) "Newest" else "Oldest",
-                        fontSize = 11.sp
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 }
             }
@@ -268,13 +384,22 @@ fun LogKeeperScreen(
                 FilterChip(
                     selected = selectedSeverity == null,
                     onClick = { viewModel.setSeverityFilter(null) },
-                    label = { Text("All Severities", fontSize = 11.sp) }
+                    label = { Text("All Severities", fontSize = 11.sp) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
                 )
                 LogSeverity.entries.forEach { sev ->
+                    val isError = sev == LogSeverity.ERROR
                     FilterChip(
                         selected = selectedSeverity == sev,
                         onClick = { viewModel.setSeverityFilter(if (selectedSeverity == sev) null else sev) },
-                        label = { Text(sev.name, fontSize = 11.sp) }
+                        label = { Text(sev.name, fontSize = 11.sp) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = if (isError) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
+                            selectedLabelColor = if (isError) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer
+                        )
                     )
                 }
             }
@@ -291,13 +416,21 @@ fun LogKeeperScreen(
                 FilterChip(
                     selected = selectedCategory == null,
                     onClick = { viewModel.setCategoryFilter(null) },
-                    label = { Text("All Categories", fontSize = 11.sp) }
+                    label = { Text("All Categories", fontSize = 11.sp) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
                 )
                 LogCategory.entries.forEach { cat ->
                     FilterChip(
                         selected = selectedCategory == cat,
                         onClick = { viewModel.setCategoryFilter(if (selectedCategory == cat) null else cat) },
-                        label = { Text(cat.name, fontSize = 11.sp) }
+                        label = { Text(cat.name, fontSize = 11.sp) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
                     )
                 }
             }
@@ -306,8 +439,9 @@ fun LogKeeperScreen(
 
             // Bounded Retention & Truthful Observability Banner
             Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                color = MaterialTheme.colorScheme.surfaceVariant,
                 shape = RoundedCornerShape(8.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -322,7 +456,7 @@ fun LogKeeperScreen(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Showing ${logEvents.size} of ${rawEvents.size} entries (Buffer cap: 500 FIFO). Redacts secrets. Unobserved in Phase 1: per-app decisions & DNS ad-blocking.",
+                        text = "Memory: ${logEvents.size}/${rawEvents.size} (500 FIFO) | Disk: ${viewModel.getDiskLogSizeBytes()} B (Strict 3 MiB rotating limit). Redacts secrets. Note: Native C/Go fatal signals (SIGSEGV/SIGABRT) bypass JVM handlers and are logged in OS tombstones.",
                         style = MaterialTheme.typography.labelSmall,
                         fontSize = 10.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -376,9 +510,11 @@ private fun LogKeeperItemCard(event: LogEvent) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(10.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-        )
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Column(modifier = Modifier.padding(10.dp)) {
             // Header Row: Severity Pill, Category Pill, Component, Timestamp
@@ -391,7 +527,7 @@ private fun LogKeeperItemCard(event: LogEvent) {
                     // Severity
                     Surface(
                         shape = RoundedCornerShape(4.dp),
-                        color = severityColor.copy(alpha = 0.2f),
+                        color = severityColor.copy(alpha = 0.15f),
                         modifier = Modifier.padding(end = 4.dp)
                     ) {
                         Text(
@@ -407,7 +543,8 @@ private fun LogKeeperItemCard(event: LogEvent) {
                     // Category
                     Surface(
                         shape = RoundedCornerShape(4.dp),
-                        color = MaterialTheme.colorScheme.surface,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        border = androidx.compose.foundation.BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline),
                         modifier = Modifier.padding(end = 6.dp)
                     ) {
                         Text(
@@ -453,7 +590,8 @@ private fun LogKeeperItemCard(event: LogEvent) {
             if (!event.details.isNullOrBlank()) {
                 Surface(
                     shape = RoundedCornerShape(4.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    border = androidx.compose.foundation.BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 4.dp)
@@ -472,3 +610,4 @@ private fun LogKeeperItemCard(event: LogEvent) {
         }
     }
 }
+

@@ -51,9 +51,11 @@ data class LogEvent(
  */
 object OperationalLogCatcher {
 
-    private const val MAX_MEMORY_ENTRIES = 500
-    private const val MAX_DISK_LOG_BYTES = 256 * 1024L // 256 KB max rotating file
-    private const val LOG_FILE_NAME = "vianshield_operational.log"
+    const val MAX_MEMORY_ENTRIES = 500
+    const val MAX_TOTAL_DISK_BYTES = 3 * 1024 * 1024L // 3 MiB strict persistent limit across all files
+    const val MAX_SEGMENT_DISK_BYTES = MAX_TOTAL_DISK_BYTES / 2 // 1.5 MiB per rotating segment
+    const val ACTIVE_LOG_FILE = "vianshield_operational.log"
+    const val ROTATED_LOG_FILE = "vianshield_operational.log.1"
 
     private val idCounter = AtomicLong(1L)
     private val _isLoggingEnabled = MutableStateFlow(true)
@@ -74,7 +76,7 @@ object OperationalLogCatcher {
             category = LogCategory.ENGINE_INIT,
             severity = LogSeverity.INFO,
             component = "LogCatcher",
-            message = "OperationalLogCatcher initialized with 500-entry memory bound and rotating 256KB disk buffer"
+            message = "OperationalLogCatcher initialized (Memory bound: 500 entries | Persistent bound: 3 MiB rotating)"
         )
     }
 
@@ -143,12 +145,29 @@ object OperationalLogCatcher {
         }
         appContext?.let { ctx ->
             try {
-                val file = File(ctx.filesDir, LOG_FILE_NAME)
-                if (file.exists()) {
-                    file.delete()
-                }
-            } catch (_: Exception) {}
+                val active = File(ctx.filesDir, ACTIVE_LOG_FILE)
+                val rotated = File(ctx.filesDir, ROTATED_LOG_FILE)
+                if (active.exists()) active.delete()
+                if (rotated.exists()) rotated.delete()
+            } catch (_: Throwable) {}
         }
+    }
+
+    fun getDiskLogSizeBytes(): Long {
+        val ctx = appContext ?: return 0L
+        return try {
+            val active = File(ctx.filesDir, ACTIVE_LOG_FILE)
+            val rotated = File(ctx.filesDir, ROTATED_LOG_FILE)
+            (if (active.exists()) active.length() else 0L) +
+                    (if (rotated.exists()) rotated.length() else 0L)
+        } catch (_: Throwable) {
+            0L
+        }
+    }
+
+    fun getRecentEvents(count: Int = 20): List<LogEvent> {
+        val all = _events.value
+        return if (all.size <= count) all else all.takeLast(count)
     }
 
     fun exportFormattedLogs(): String {
@@ -156,9 +175,12 @@ object OperationalLogCatcher {
         val sb = StringBuilder()
         sb.append("=== VIANSHIELD OPERATIONAL DIAGNOSTIC LOG ===\n")
         sb.append("Export Time: ").append(dateFormat.format(Date())).append("\n")
-        sb.append("Total In-Memory Entries: ").append(_events.value.size).append("\n")
+        sb.append("Total In-Memory Entries: ").append(_events.value.size).append(" (Cap: 500 FIFO)\n")
+        sb.append("Persistent Storage Limit: 3 MiB total (Active: 1.5 MiB, Rotated: 1.5 MiB)\n")
+        sb.append("Current Persistent Usage: ").append(getDiskLogSizeBytes()).append(" bytes\n")
         sb.append("Master Switch State: ").append(if (_isLoggingEnabled.value) "ENABLED" else "DISABLED").append("\n")
-        sb.append("Privacy Policy: Secrets redacted, zero browsing tracking, zero fake telemetry\n\n")
+        sb.append("Privacy Policy: All cryptographic private keys/secrets redacted. Zero browsing telemetry.\n")
+        sb.append("Phase 1 Reality: Per-app traffic decisions & DNS ad-blocking are not active in Phase 1.\n\n")
 
         _events.value.forEach { e ->
             sb.append("[").append(dateFormat.format(Date(e.timestamp))).append("] ")
@@ -187,21 +209,35 @@ object OperationalLogCatcher {
         return result
     }
 
+    @Synchronized
     private fun appendToFile(event: LogEvent) {
         val ctx = appContext ?: return
         try {
-            val file = File(ctx.filesDir, LOG_FILE_NAME)
-            if (file.exists() && file.length() > MAX_DISK_LOG_BYTES) {
-                // Rotate by trimming top half
-                val lines = file.readLines()
-                if (lines.size > 200) {
-                    file.writeText(lines.takeLast(lines.size / 2).joinToString("\n") + "\n")
-                }
-            }
+            val dir = ctx.filesDir
+            val activeFile = File(dir, ACTIVE_LOG_FILE)
+            val rotatedFile = File(dir, ROTATED_LOG_FILE)
+
             val line = "${event.timestamp}|${event.severity}|${event.category}|${event.component}|${event.message}|${event.details ?: ""}\n"
-            file.appendText(line)
-        } catch (_: Exception) {
-            // Fail silently on disk errors to protect runtime stability
+            val lineBytes = line.toByteArray(Charsets.UTF_8).size
+
+            // Enforce 1.5 MiB segment boundary for active file
+            if (activeFile.exists() && (activeFile.length() + lineBytes > MAX_SEGMENT_DISK_BYTES)) {
+                if (rotatedFile.exists()) {
+                    rotatedFile.delete()
+                }
+                activeFile.renameTo(rotatedFile)
+            }
+
+            // Global safety check: if total bytes still exceed MAX_TOTAL_DISK_BYTES, remove rotated file
+            val totalBytes = (if (activeFile.exists()) activeFile.length() else 0L) +
+                    (if (rotatedFile.exists()) rotatedFile.length() else 0L)
+            if (totalBytes + lineBytes > MAX_TOTAL_DISK_BYTES && rotatedFile.exists()) {
+                rotatedFile.delete()
+            }
+
+            activeFile.appendText(line, Charsets.UTF_8)
+        } catch (_: Throwable) {
+            // Fail silently on disk errors to protect runtime stability of VPN service and app
         }
     }
 }

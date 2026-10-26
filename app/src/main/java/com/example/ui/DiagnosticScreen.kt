@@ -155,7 +155,10 @@ fun DiagnosticScreen(
                     }
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    titleContentColor = MaterialTheme.colorScheme.onSurface,
+                    navigationIconContentColor = MaterialTheme.colorScheme.onSurface,
+                    actionIconContentColor = MaterialTheme.colorScheme.primary
                 )
             )
         }
@@ -262,7 +265,9 @@ private fun VpnControlCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Column(
             modifier = Modifier
@@ -273,8 +278,8 @@ private fun VpnControlCard(
             // Status Indicator Pill
             Surface(
                 shape = RoundedCornerShape(24.dp),
-                color = statusColor.copy(alpha = 0.15f),
-                border = androidx.compose.foundation.BorderStroke(1.dp, statusColor.copy(alpha = 0.4f)),
+                color = statusColor.copy(alpha = 0.12f),
+                border = androidx.compose.foundation.BorderStroke(1.dp, statusColor.copy(alpha = 0.35f)),
                 modifier = Modifier.padding(bottom = 16.dp)
             ) {
                 Row(
@@ -304,7 +309,12 @@ private fun VpnControlCard(
                         .fillMaxWidth()
                         .padding(bottom = 16.dp)
                         .background(
-                            MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+                            MaterialTheme.colorScheme.surfaceVariant,
+                            RoundedCornerShape(12.dp)
+                        )
+                        .border(
+                            1.dp,
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.7f),
                             RoundedCornerShape(12.dp)
                         )
                         .padding(12.dp),
@@ -313,12 +323,13 @@ private fun VpnControlCard(
                     Text(
                         text = "Endpoint: ${vpnState.endpoint}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontWeight = FontWeight.Medium
                     )
                     Text(
                         text = "Interface IP: ${vpnState.localAddress} (MTU ${vpnState.mtu})",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -326,8 +337,9 @@ private fun VpnControlCard(
             // Error Message (when in error state)
             if (vpnState is VpnState.Error) {
                 Surface(
-                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+                    color = MaterialTheme.colorScheme.errorContainer,
                     shape = RoundedCornerShape(12.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.3f)),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(bottom = 16.dp)
@@ -346,7 +358,7 @@ private fun VpnControlCard(
                         Text(
                             text = vpnState.message,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error
+                            color = MaterialTheme.colorScheme.onErrorContainer
                         )
                     }
                 }
@@ -363,7 +375,8 @@ private fun VpnControlCard(
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (isRunning) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                     contentColor = Color.White
-                )
+                ),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
             ) {
                 Icon(
                     imageVector = if (isRunning) Icons.Default.Stop else Icons.Default.PlayArrow,
@@ -393,7 +406,9 @@ private fun ConfigurationCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(
@@ -412,12 +427,15 @@ private fun ConfigurationCard(
                     Text(
                         text = "WireGuard Profile Configuration",
                         style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 }
                 OutlinedButton(
                     onClick = onToggleEdit,
                     shape = RoundedCornerShape(10.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                 ) {
                     Text(text = if (isEditing) "Cancel" else "Edit")
@@ -439,9 +457,14 @@ private fun ConfigurationCard(
                 Spacer(modifier = Modifier.height(8.dp))
                 Button(
                     onClick = { onSaveConfig(editedText) },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = Color.White
+                    )
                 ) {
-                    Text("Apply Configuration")
+                    Text("Apply Configuration", fontWeight = FontWeight.Bold)
                 }
             } else {
                 Text(
@@ -453,6 +476,7 @@ private fun ConfigurationCard(
                     text = "Keys & Secrets: Securely stored in memory, strictly redacted from diagnostic logs.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Medium,
                     modifier = Modifier.padding(top = 4.dp)
                 )
             }
@@ -474,7 +498,9 @@ private fun OperationalLogViewerCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             // Header with Master Switch
@@ -494,7 +520,8 @@ private fun OperationalLogViewerCard(
                     Text(
                         text = "Operational Log Catcher",
                         style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
                 }
 
@@ -512,7 +539,9 @@ private fun OperationalLogViewerCard(
                         modifier = Modifier.testTag("master_log_switch"),
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
-                            checkedTrackColor = StatusConnected
+                            checkedTrackColor = StatusConnected,
+                            uncheckedThumbColor = Color.White,
+                            uncheckedTrackColor = MaterialTheme.colorScheme.outline
                         )
                     )
                 }
@@ -564,17 +593,28 @@ private fun OperationalLogViewerCard(
                         selected = selectedSeverity == null,
                         onClick = { onSelectSeverity(null) },
                         label = { Text("All (${logEvents.size})", fontSize = 11.sp) },
-                        colors = FilterChipDefaults.filterChipColors()
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
                     )
                     FilterChip(
                         selected = selectedSeverity == LogSeverity.INFO,
                         onClick = { onSelectSeverity(if (selectedSeverity == LogSeverity.INFO) null else LogSeverity.INFO) },
-                        label = { Text("Info", fontSize = 11.sp) }
+                        label = { Text("Info", fontSize = 11.sp) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                            selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
                     )
                     FilterChip(
                         selected = selectedSeverity == LogSeverity.ERROR,
                         onClick = { onSelectSeverity(if (selectedSeverity == LogSeverity.ERROR) null else LogSeverity.ERROR) },
-                        label = { Text("Error", fontSize = 11.sp) }
+                        label = { Text("Error", fontSize = 11.sp) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.errorContainer,
+                            selectedLabelColor = MaterialTheme.colorScheme.onErrorContainer
+                        )
                     )
                 }
 
@@ -612,8 +652,8 @@ private fun OperationalLogViewerCard(
                     .fillMaxWidth()
                     .height(240.dp),
                 shape = RoundedCornerShape(10.dp),
-                color = MaterialTheme.colorScheme.surface,
-                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.surfaceVariant)
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
             ) {
                 if (logEvents.isEmpty()) {
                     Box(
@@ -654,8 +694,9 @@ private fun LogItemRow(event: LogEvent) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f), RoundedCornerShape(6.dp))
-            .padding(6.dp)
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(6.dp))
+            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
+            .padding(8.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -665,7 +706,7 @@ private fun LogItemRow(event: LogEvent) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(
                     shape = RoundedCornerShape(4.dp),
-                    color = severityColor.copy(alpha = 0.2f),
+                    color = severityColor.copy(alpha = 0.15f),
                     modifier = Modifier.padding(end = 6.dp)
                 ) {
                     Text(
@@ -700,7 +741,7 @@ private fun LogItemRow(event: LogEvent) {
                 fontSize = 11.sp
             ),
             color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.padding(top = 2.dp)
+            modifier = Modifier.padding(top = 3.dp)
         )
 
         if (!event.details.isNullOrBlank()) {
@@ -722,13 +763,16 @@ private fun CiPipelineCard() {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
                 text = "Engine Build Pipeline (GitHub Actions)",
                 style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
@@ -742,3 +786,4 @@ private fun CiPipelineCard() {
         }
     }
 }
+

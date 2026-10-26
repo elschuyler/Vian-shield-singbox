@@ -99,5 +99,10 @@
 | 2026-10-25 22:35 | Phase 1.5 | Audited real upstream libbox API: corrected openTun detachFd flow, implemented protect(fd) socket loop prevention, aligned GitHub Actions build_libbox with recursive submodules, and enforced truthful native presence checking. | Complete |
 | 2026-10-25 23:15 | CI Fix | Resolved :app:validateSigningDebug on missing keystore: implemented standard AGP debug signing fallback, removed unnecessary Google Services plugin, and guarded artifact upload. | Complete |
 | 2026-10-25 23:30 | Log Keeper | Completed Log Keeper audit & integration: built full LogKeeperScreen with BackHandler, added open_log_keeper_button in DiagnosticScreen, fixed 6-flow combine in DiagnosticViewModel, and verified all 10 unit tests & compile_applet. | Complete |
+| 2026-10-25 23:50 | Log Dumps & Crashes | Enforced strict 3 MiB persistent log limit (2-file rolling rotation), zero-permission Downloads export via MediaStore, robust chained UncaughtExceptionHandler with bounded crash dumps, pending crash launch detection & dismissal, honest native signal documentation, and 5 new unit tests. | Complete |
+| 2026-10-26 00:08 | Hardening & Audit | Final Phase 1.5 hardening: prevented BoxService leak on start failure, hardened stop cleanup when native instance exists, guarded TUN fd race on close, and added defense-in-depth secret redaction on log exports. All 15 tests and compile_applet verified. | Complete |
+| 2026-10-26 00:30 | UI Redesign | Implemented clean Light Sky Blue theme: centralized SkyBlue tokens in Color.kt and Theme.kt (SkyBluePrimary #0284C7, SkyBlueBackground #F6FAFD, SkyBlueSurface #FFFFFF, SkyBlueSurfaceBorder #D6E6F5, near-black Slate 900 typography, accessible emerald/amber/crimson status colors). Redesigned DiagnosticScreen & LogKeeperScreen with white cards, subtle light-blue borders, and sky-blue selected states. All 15 tests passed. | Complete |
+
+
 
 

@@ -151,6 +151,7 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
                 val err = engineStartResult.exceptionOrNull()?.message ?: "Engine start failed"
                 OperationalLogCatcher.error(LogCategory.ENGINE_INIT, "VpnService", err)
                 _vpnState.value = VpnState.Error("ERR_ENGINE_START", err)
+                singBoxEngine.stop()
                 releaseTunFd()
                 stopForegroundSafely()
                 return@launch
@@ -283,13 +284,14 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
 
     private fun releaseTunFd() {
         if (activeTunFd >= 0) {
+            val fdToClose = activeTunFd
+            activeTunFd = -1
             try {
                 // When detached, Go closes the file descriptor upon BoxService.close().
                 // If Go did not close it, we close the descriptor safely.
-                ParcelFileDescriptor.adoptFd(activeTunFd).close()
-                OperationalLogCatcher.info(LogCategory.TUN_INTERFACE, "VpnService", "Active TUN descriptor closed: fd=$activeTunFd")
+                ParcelFileDescriptor.adoptFd(fdToClose).close()
+                OperationalLogCatcher.info(LogCategory.TUN_INTERFACE, "VpnService", "Active TUN descriptor closed: fd=$fdToClose")
             } catch (_: Exception) {}
-            activeTunFd = -1
         }
     }
 

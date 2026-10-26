@@ -1,10 +1,13 @@
 package com.example
 
+import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.example.config.WireGuardConfigParser
 import com.example.engine.SingBoxAdapter
 import com.example.engine.SingBoxPlatformCallback
+import com.example.logging.CrashReporter
 import com.example.logging.LogCategory
+import com.example.logging.LogExporter
 import com.example.logging.LogSeverity
 import com.example.logging.OperationalLogCatcher
 import com.example.ui.AppScreen
@@ -15,12 +18,14 @@ import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -235,5 +240,110 @@ class VianshieldPhase1Test {
         org.robolectric.shadows.ShadowLooper.idleMainLooper()
         val timeFiltered = viewModel.filteredLogEvents.value
         assertTrue("Recent events should pass 6h filter", timeFiltered.size >= 3)
+    }
+
+    @Test
+    fun operationalLogCatcher_enforcesPersistentDiskLimitAndRotation() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        OperationalLogCatcher.initialize(context)
+        OperationalLogCatcher.clear()
+
+        assertEquals(0L, OperationalLogCatcher.getDiskLogSizeBytes())
+
+        // Write events
+        for (i in 1..20) {
+            OperationalLogCatcher.info(LogCategory.TUN_INTERFACE, "DiskTest", "Disk event line $i with details")
+        }
+
+        val diskBytes = OperationalLogCatcher.getDiskLogSizeBytes()
+        assertTrue("Disk log bytes should be non-zero after logging", diskBytes > 0)
+        assertTrue("Disk log must not exceed MAX_TOTAL_DISK_BYTES (3 MiB)", diskBytes <= OperationalLogCatcher.MAX_TOTAL_DISK_BYTES)
+
+        val activeFile = File(context.filesDir, OperationalLogCatcher.ACTIVE_LOG_FILE)
+        assertTrue("Active log file must exist on disk", activeFile.exists())
+
+        OperationalLogCatcher.clear()
+        assertEquals("Clearing should delete active and rotated log files", 0L, OperationalLogCatcher.getDiskLogSizeBytes())
+        assertFalse("Active log file deleted after clear", activeFile.exists())
+    }
+
+    @Test
+    fun crashReporter_recordsUncaughtExceptionAndRedactsSecrets() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        CrashReporter.clearCrashReports(context)
+        assertFalse("Initially should have no crash reports", CrashReporter.hasPendingCrashReports(context))
+
+        val secretKey = "44CharacterBase64EncodedKeyStringPattern123="
+        val sensitiveException = RuntimeException("Tunnel failed for private_key=$secretKey")
+        val thread = Thread.currentThread()
+
+        val report = CrashReporter.recordCrash(context, thread, sensitiveException)
+        assertNotNull("Crash report should be created", report)
+        assertTrue("Pending crash reports should be detected", CrashReporter.hasPendingCrashReports(context))
+        assertEquals(1, CrashReporter.getPendingCrashCount(context))
+
+        val loaded = CrashReporter.getPendingCrashReports(context).first()
+        assertEquals("java.lang.RuntimeException", loaded.exceptionClass)
+        assertFalse("Private key must be redacted in exception message", loaded.exceptionMessage.contains(secretKey))
+        assertTrue("Redaction tag should be present", loaded.exceptionMessage.contains("[REDACTED"))
+
+        CrashReporter.clearCrashReports(context)
+        assertFalse("After clear, pending crash reports should be false", CrashReporter.hasPendingCrashReports(context))
+    }
+
+    @Test
+    fun logExporter_exportsOperationalLogsAndRedactsSecrets() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        OperationalLogCatcher.clear()
+
+        val secretKey = "44CharacterBase64EncodedKeyStringPattern123="
+        OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "TestExport", "Engine started with secret token=$secretKey")
+
+        val events = OperationalLogCatcher.events.value
+        val result = LogExporter.exportOperationalLogs(context, events)
+
+        assertTrue("Log export to Downloads should succeed", result.isSuccess)
+        val msg = result.getOrThrow()
+        assertTrue("Export confirmation must indicate saved destination", msg.contains("Saved to"))
+    }
+
+    @Test
+    fun logExporter_exportsCrashReportsWithMetadata() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        CrashReporter.clearCrashReports(context)
+
+        val testCrash = IllegalStateException("Native bridge init exception")
+        CrashReporter.recordCrash(context, Thread.currentThread(), testCrash)
+
+        val pending = CrashReporter.getPendingCrashReports(context)
+        assertEquals(1, pending.size)
+
+        val result = LogExporter.exportCrashReports(context, pending)
+        assertTrue("Crash report export should succeed", result.isSuccess)
+        assertTrue(result.getOrThrow().contains("Saved to"))
+
+        CrashReporter.clearCrashReports(context)
+    }
+
+    @Test
+    fun diagnosticViewModel_crashReportAndExportLifecycle() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        CrashReporter.clearCrashReports(context)
+
+        // Seed a crash report
+        CrashReporter.recordCrash(context, Thread.currentThread(), NullPointerException("Test NPE"))
+
+        val viewModel = DiagnosticViewModel(context as android.app.Application)
+        assertTrue("ViewModel must detect pending crash reports", viewModel.hasPendingCrashReports.value)
+        assertEquals(1, viewModel.pendingCrashCount.value)
+
+        // Export crash reports
+        val exportResult = viewModel.exportCrashReportsToDownloads()
+        assertTrue("Export crash reports must succeed", exportResult.isSuccess)
+
+        // Dismiss crash reports
+        viewModel.dismissCrashReports()
+        assertFalse("Pending crash reports must be false after dismissal", viewModel.hasPendingCrashReports.value)
+        assertEquals(0, viewModel.pendingCrashCount.value)
     }
 }

@@ -10,6 +10,8 @@ import com.example.logging.LogCategory
 import com.example.logging.LogEvent
 import com.example.logging.LogSeverity
 import com.example.logging.OperationalLogCatcher
+import com.example.logging.CrashReporter
+import com.example.logging.LogExporter
 import com.example.vpn.VianshieldVpnService
 import com.example.vpn.VpnLifecycleController
 import com.example.vpn.VpnState
@@ -60,6 +62,12 @@ class DiagnosticViewModel(application: Application) : AndroidViewModel(applicati
 
     private val _currentConfig = MutableStateFlow(WireGuardConfigParser.createDefaultTestConfig())
     val currentConfig: StateFlow<String> = _currentConfig.asStateFlow()
+
+    private val _hasPendingCrashReports = MutableStateFlow(CrashReporter.hasPendingCrashReports(application))
+    val hasPendingCrashReports: StateFlow<Boolean> = _hasPendingCrashReports.asStateFlow()
+
+    private val _pendingCrashCount = MutableStateFlow(CrashReporter.getPendingCrashCount(application))
+    val pendingCrashCount: StateFlow<Int> = _pendingCrashCount.asStateFlow()
 
     // Bounded and filtered events stream for Log Keeper UI
     val filteredLogEvents: StateFlow<List<LogEvent>> = combine(
@@ -156,5 +164,37 @@ class DiagnosticViewModel(application: Application) : AndroidViewModel(applicati
 
     fun exportLogs(): String {
         return OperationalLogCatcher.exportFormattedLogs()
+    }
+
+    fun exportLogsToDownloads(): Result<String> {
+        val app = getApplication<Application>()
+        val eventsToExport = filteredLogEvents.value.ifEmpty { rawLogEvents.value }
+        return LogExporter.exportOperationalLogs(app, eventsToExport)
+    }
+
+    fun exportCrashReportsToDownloads(): Result<String> {
+        val app = getApplication<Application>()
+        val reports = CrashReporter.getPendingCrashReports(app)
+        val result = LogExporter.exportCrashReports(app, reports)
+        if (result.isSuccess) {
+            refreshCrashReportsState()
+        }
+        return result
+    }
+
+    fun dismissCrashReports() {
+        val app = getApplication<Application>()
+        CrashReporter.clearCrashReports(app)
+        refreshCrashReportsState()
+    }
+
+    fun refreshCrashReportsState() {
+        val count = CrashReporter.getPendingCrashCount(getApplication())
+        _pendingCrashCount.value = count
+        _hasPendingCrashReports.value = count > 0
+    }
+
+    fun getDiskLogSizeBytes(): Long {
+        return OperationalLogCatcher.getDiskLogSizeBytes()
     }
 }

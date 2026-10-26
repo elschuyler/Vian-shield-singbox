@@ -11,6 +11,31 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
+private val LightSkyColorScheme = lightColorScheme(
+    primary = SkyBluePrimary,
+    onPrimary = Color.White,
+    primaryContainer = SkyBluePrimaryContainer,
+    onPrimaryContainer = SkyBlueOnPrimaryContainer,
+    secondary = SkyBluePrimaryHover,
+    onSecondary = Color.White,
+    secondaryContainer = SkyBluePrimaryContainer,
+    onSecondaryContainer = SkyBlueOnPrimaryContainer,
+    tertiary = SkyBluePrimaryLight,
+    onTertiary = SkyBlueTextPrimary,
+    background = SkyBlueBackground,
+    onBackground = SkyBlueTextPrimary,
+    surface = SkyBlueSurface,
+    onSurface = SkyBlueTextPrimary,
+    surfaceVariant = SkyBlueSurfaceVariant,
+    onSurfaceVariant = SkyBlueTextSecondary,
+    outline = SkyBlueSurfaceBorder,
+    outlineVariant = Color(0xFFE2E8F0),
+    error = StatusError,
+    onError = Color.White,
+    errorContainer = StatusErrorContainer,
+    onErrorContainer = StatusOnErrorContainer
+)
+
 private val DarkColorScheme = darkColorScheme(
     primary = ShieldPrimaryCyan,
     onPrimary = Color(0xFF00363A),
@@ -27,29 +52,15 @@ private val DarkColorScheme = darkColorScheme(
     surfaceVariant = ShieldDarkSurfaceVariant,
     onSurfaceVariant = Color(0xFFCBD5E1),
     error = StatusError,
-    onError = Color.White
-)
-
-private val LightColorScheme = lightColorScheme(
-    primary = ShieldLightPrimary,
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFFCBE6FF),
-    onPrimaryContainer = Color(0xFF001E30),
-    secondary = ShieldPrimaryCyan,
-    background = ShieldLightBackground,
-    onBackground = Color(0xFF0F172A),
-    surface = ShieldLightSurface,
-    onSurface = Color(0xFF0F172A),
-    surfaceVariant = ShieldLightSurfaceVariant,
-    onSurfaceVariant = Color(0xFF475569),
-    error = StatusError,
-    onError = Color.White
+    onError = Color.White,
+    errorContainer = Color(0xFF7F1D1D),
+    onErrorContainer = Color(0xFFFECACA)
 )
 
 @Composable
 fun MyApplicationTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = false, // Keep consistent cyber-shield palette
+    dynamicColor: Boolean = false, // Keep consistent Sky Blue palette across Android versions
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {
@@ -58,7 +69,7 @@ fun MyApplicationTheme(
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
         darkTheme -> DarkColorScheme
-        else -> DarkColorScheme // Prefer high-contrast dark theme by default for firewall/network security console
+        else -> LightSkyColorScheme // Clean Light Sky Blue Theme by default
     }
 
     MaterialTheme(
@@ -67,3 +78,4 @@ fun MyApplicationTheme(
         content = content
     )
 }
+
