@@ -86,10 +86,11 @@ import com.example.vpn.VpnState
 @Composable
 fun DiagnosticScreen(
     viewModel: DiagnosticViewModel,
+    onOpenLogKeeper: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val vpnState by viewModel.vpnState.collectAsState()
-    val logEvents by viewModel.logEvents.collectAsState()
+    val logEvents by viewModel.rawLogEvents.collectAsState()
     val isLoggingEnabled by viewModel.isLoggingEnabled.collectAsState()
     val selectedSeverity by viewModel.selectedSeverity.collectAsState()
     val currentConfig by viewModel.currentConfig.collectAsState()
@@ -129,6 +130,16 @@ fun DiagnosticScreen(
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = onOpenLogKeeper,
+                        modifier = Modifier.testTag("topbar_log_keeper_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.BugReport,
+                            contentDescription = "Open Log Keeper",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -195,6 +206,7 @@ fun DiagnosticScreen(
                     logEvents = logEvents.filter {
                         selectedSeverity == null || it.severity == selectedSeverity
                     },
+                    onOpenLogKeeper = onOpenLogKeeper,
                     onClearLogs = { viewModel.clearLogs() },
                     onExportLogs = {
                         val formatted = viewModel.exportLogs()
@@ -455,6 +467,7 @@ private fun OperationalLogViewerCard(
     selectedSeverity: LogSeverity?,
     onSelectSeverity: (LogSeverity?) -> Unit,
     logEvents: List<LogEvent>,
+    onOpenLogKeeper: () -> Unit = {},
     onClearLogs: () -> Unit,
     onExportLogs: () -> Unit
 ) {
@@ -509,8 +522,36 @@ private fun OperationalLogViewerCard(
                 text = "Bounded buffer (500 max). Captures engine init, lifecycle transitions, TUN errors. Zero secret leakage.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
+                modifier = Modifier.padding(top = 4.dp, bottom = 12.dp)
             )
+
+            // Prominent Navigation Button to Open Dedicated Log Keeper
+            Button(
+                onClick = onOpenLogKeeper,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("open_log_keeper_button"),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = Color.White
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.BugReport,
+                    contentDescription = "Open Log Keeper",
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Open Dedicated Log Keeper (${logEvents.size} events)",
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
 
             // Severity Filter Chips & Action Buttons
             Row(

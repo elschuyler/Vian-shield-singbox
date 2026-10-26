@@ -110,3 +110,28 @@
   - Remote GitHub Actions execution: pending push to GitHub.
 * **Any deviation from what was requested, and why:** None. Surgical fix applied strictly to debug signing, unused plugin removal, and artifact guards.
 * **Any known issue or follow-up needed:** Ready for remote GitHub Actions run.
+## Entry: 2026-10-25T23:31:00-07:00
+* **Request:** Vianshield Log Keeper Integration Audit (no feature expansion). Verify backend, trace event connections, build dedicated UI and navigation button, ensure time/category/severity/search filters, sort, export, truthful reporting of unobserved events, and unit test verification.
+* **Exact files touched:**
+  - `/app/src/main/java/com/example/ui/LogKeeperScreen.kt`
+  - `/app/src/main/java/com/example/ui/DiagnosticViewModel.kt`
+  - `/app/src/main/java/com/example/ui/DiagnosticScreen.kt`
+  - `/app/src/main/java/com/example/MainActivity.kt`
+  - `/app/src/test/java/com/example/VianshieldPhase1Test.kt`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_001.md`
+* **What was actually done:**
+  1. Audited backend `OperationalLogCatcher`: verified 500-entry in-memory FIFO buffer (`ArrayDeque`) and 256KB disk persistence (`vianshield_operational.log`).
+  2. Traced real event connections from `VianshieldVpnService`, `SingBoxEngine`, `SingBoxAdapter`, `VpnLifecycleController`, and `WireGuardConfigParser`.
+  3. Identified truthful status of events: explicitly documented that per-app packet decisions and DNS ad-blocking decisions are not observed in Phase 1 (deferred to Phase 3 & 4).
+  4. Built `LogKeeperScreen.kt` reading directly from `DiagnosticViewModel.filteredLogEvents` / `OperationalLogCatcher.events` with BackHandler, search bar, time filters (6h, 12h, 24h, All), category chips, severity chips, timestamp sorting toggle (newest/oldest), master on/off switch, copy to clipboard, and clear logs.
+  5. Placed prominent `open_log_keeper_button` (`Modifier.testTag("open_log_keeper_button")`) on `DiagnosticScreen` and top app bar action.
+  6. Connected navigation state in `MainActivity.kt` with `BackHandler` support.
+  7. Resolved coroutine `combine` 6-flow type-inference limit in `DiagnosticViewModel.kt` using nested combine logic with `SharingStarted.Eagerly`.
+  8. Expanded and verified unit test suite in `VianshieldPhase1Test.kt` covering navigation, search, category, and time filtering.
+* **How it was verified:**
+  - Local build only: Gradle unit tests (`gradle :app:testDebugUnitTest`) executed and passed all 10 tests (41s).
+  - Applet compilation (`compile_applet`) executed and succeeded with 0 errors.
+  - Physical on-device execution: pending (requires installation on Android physical hardware).
+* **Any deviation from what was requested, and why:** None. Only connected and completed the Log Keeper without modifying engine architecture or introducing Phase 2/3/4 feature bloat.
+* **Any known issue or follow-up needed:** Ready for on-device manual QA.

@@ -14,13 +14,13 @@
 - [x] Initial repository audit & baseline build verification (`compile_applet` passed).
 - [x] Security scan protocol & credential remediation (debug keystore analysis, gitignore hardening, env-based config).
 - [x] Architecture Blueprint (`BLUEPRINT.md`) & Receipts Log (`/receipts/RECEIPTS_001.md`).
-- [ ] Sing-box engine abstraction adapter (`SingBoxEngine`, `SingBoxAdapter`).
-- [ ] Genuine Android `VpnService` lifecycle implementation (`VianshieldVpnService`, `VpnLifecycleController`, `VpnState`).
-- [ ] WireGuard configuration parser & sing-box JSON transformer (`WireGuardConfigParser`).
-- [ ] Operational Log Catcher with Master On/Off switch, bounded circular storage, secret redaction, and export API (`OperationalLogCatcher`).
-- [ ] Diagnostic UI with real-time state, control toggle, and live log viewer.
-- [ ] Pinned GitHub Actions build workflow (`.github/workflows/build-vianshield.yml`) targeting sing-box v1.11.0.
-- [ ] Verification via JVM/Robolectric unit tests and `compile_applet`.
+- [x] Sing-box engine abstraction adapter (`SingBoxEngine`, `SingBoxAdapter`).
+- [x] Genuine Android `VpnService` lifecycle implementation (`VianshieldVpnService`, `VpnLifecycleController`, `VpnState`).
+- [x] WireGuard configuration parser & sing-box JSON transformer (`WireGuardConfigParser`).
+- [x] Operational Log Catcher with Master On/Off switch, bounded circular storage, secret redaction, and export API (`OperationalLogCatcher`).
+- [x] Diagnostic UI with real-time state, control toggle, and live log viewer.
+- [x] Pinned GitHub Actions build workflow (`.github/workflows/build-vianshield.yml`) targeting sing-box v1.11.0.
+- [x] Verification via JVM/Robolectric unit tests and `compile_applet`.
 
 ### Phase 2: Native libbox.aar Linkage & Profile Storage (Planned)
 - Import and validation of multi-profile WireGuard `.conf` files.
@@ -98,5 +98,6 @@
 | 2026-10-25 16:45 | Verification | Ran `:app:testDebugUnitTest` (all 8 tests passed) & verified `compile_applet`. | Complete |
 | 2026-10-25 22:35 | Phase 1.5 | Audited real upstream libbox API: corrected openTun detachFd flow, implemented protect(fd) socket loop prevention, aligned GitHub Actions build_libbox with recursive submodules, and enforced truthful native presence checking. | Complete |
 | 2026-10-25 23:15 | CI Fix | Resolved :app:validateSigningDebug on missing keystore: implemented standard AGP debug signing fallback, removed unnecessary Google Services plugin, and guarded artifact upload. | Complete |
+| 2026-10-25 23:30 | Log Keeper | Completed Log Keeper audit & integration: built full LogKeeperScreen with BackHandler, added open_log_keeper_button in DiagnosticScreen, fixed 6-flow combine in DiagnosticViewModel, and verified all 10 unit tests & compile_applet. | Complete |
 
 

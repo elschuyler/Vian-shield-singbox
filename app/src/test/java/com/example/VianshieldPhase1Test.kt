@@ -1,10 +1,17 @@
 package com.example
 
+import androidx.test.core.app.ApplicationProvider
 import com.example.config.WireGuardConfigParser
 import com.example.engine.SingBoxAdapter
 import com.example.engine.SingBoxPlatformCallback
 import com.example.logging.LogCategory
+import com.example.logging.LogSeverity
 import com.example.logging.OperationalLogCatcher
+import com.example.ui.AppScreen
+import com.example.ui.DiagnosticViewModel
+import com.example.ui.TimeFilter
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -126,6 +133,18 @@ class VianshieldPhase1Test {
     }
 
     @Test
+    fun operationalLogCatcher_enforcesCapacityBound() {
+        // Log 520 events to verify FIFO capping at 500
+        for (i in 1..520) {
+            OperationalLogCatcher.info(LogCategory.TUN_INTERFACE, "TestBound", "Event number $i")
+        }
+
+        val events = OperationalLogCatcher.events.value
+        assertEquals("Buffer must be strictly capped at 500 entries", 500, events.size)
+        assertTrue("Oldest events dropped; last event present", events.last().message.contains("520"))
+    }
+
+    @Test
     fun singBoxAdapter_truthfullyFailsWhenNativeBinaryIsMissing() {
         val realAdapter = SingBoxAdapter(allowSimulationForTesting = false)
         assertFalse(realAdapter.isNativeBinaryAvailable())
@@ -171,5 +190,50 @@ class VianshieldPhase1Test {
         val stopResult = adapter.stop()
         assertTrue(stopResult.isSuccess)
         assertFalse(adapter.isRunning())
+    }
+
+    @Test
+    fun diagnosticViewModel_navigationBetweenMainAndLogKeeper() {
+        val viewModel = DiagnosticViewModel(ApplicationProvider.getApplicationContext())
+        assertEquals(AppScreen.MAIN, viewModel.currentScreen.value)
+
+        viewModel.navigateTo(AppScreen.LOG_KEEPER)
+        assertEquals(AppScreen.LOG_KEEPER, viewModel.currentScreen.value)
+
+        viewModel.navigateTo(AppScreen.MAIN)
+        assertEquals(AppScreen.MAIN, viewModel.currentScreen.value)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun diagnosticViewModel_filterAndSearchIntegration() = runTest {
+        OperationalLogCatcher.clear()
+        OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "Core", "sing-box initialized")
+        OperationalLogCatcher.error(LogCategory.ERROR_DIAGNOSTIC, "VpnService", "TUN failed to open", "fd=-1")
+        OperationalLogCatcher.info(LogCategory.NETWORK_STATE, "Net", "Socket protected", "fd=15")
+
+        val viewModel = DiagnosticViewModel(ApplicationProvider.getApplicationContext())
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+
+        // Search test
+        viewModel.setSearchQuery("TUN")
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        val searchFiltered = viewModel.filteredLogEvents.value
+        assertTrue("Search should match 'TUN'", searchFiltered.any { it.message.contains("TUN") })
+
+        // Category filter test
+        viewModel.setSearchQuery("")
+        viewModel.setCategoryFilter(LogCategory.ERROR_DIAGNOSTIC)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        val catFiltered = viewModel.filteredLogEvents.value
+        assertEquals(1, catFiltered.size)
+        assertEquals(LogCategory.ERROR_DIAGNOSTIC, catFiltered[0].category)
+
+        // Time filter test
+        viewModel.setCategoryFilter(null)
+        viewModel.setTimeFilter(TimeFilter.H6)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        val timeFiltered = viewModel.filteredLogEvents.value
+        assertTrue("Recent events should pass 6h filter", timeFiltered.size >= 3)
     }
 }
