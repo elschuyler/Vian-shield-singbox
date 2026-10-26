@@ -1,11 +1,14 @@
 package com.example.ui
 
 import android.app.Application
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import androidx.activity.result.ActivityResultLauncher
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.config.WireGuardConfigParser
+import com.example.config.WireGuardProfile
 import com.example.logging.LogCategory
 import com.example.logging.LogEvent
 import com.example.logging.LogSeverity
@@ -62,6 +65,14 @@ class DiagnosticViewModel(application: Application) : AndroidViewModel(applicati
 
     private val _currentConfig = MutableStateFlow(WireGuardConfigParser.createDefaultTestConfig())
     val currentConfig: StateFlow<String> = _currentConfig.asStateFlow()
+
+    private val _importedProfilePreview = MutableStateFlow<WireGuardProfile?>(null)
+    val importedProfilePreview: StateFlow<WireGuardProfile?> = _importedProfilePreview.asStateFlow()
+
+    private val _importError = MutableStateFlow<String?>(null)
+    val importError: StateFlow<String?> = _importError.asStateFlow()
+
+    private var pendingImportedRawConfig: String? = null
 
     private val _hasPendingCrashReports = MutableStateFlow(CrashReporter.hasPendingCrashReports(application))
     val hasPendingCrashReports: StateFlow<Boolean> = _hasPendingCrashReports.asStateFlow()
@@ -196,5 +207,66 @@ class DiagnosticViewModel(application: Application) : AndroidViewModel(applicati
 
     fun getDiskLogSizeBytes(): Long {
         return OperationalLogCatcher.getDiskLogSizeBytes()
+    }
+
+    fun loadConfigFile(context: Context, uri: Uri) {
+        try {
+            val fileName = queryFileName(context, uri) ?: "Imported Profile"
+            val content = context.contentResolver.openInputStream(uri)?.use { stream ->
+                stream.bufferedReader().readText()
+            } ?: throw IllegalArgumentException("Could not read from selected file stream")
+
+            val parseResult = WireGuardConfigParser.parse(content, fileName)
+            if (parseResult.isSuccess) {
+                pendingImportedRawConfig = content
+                _importedProfilePreview.value = parseResult.getOrThrow()
+                _importError.value = null
+            } else {
+                val err = parseResult.exceptionOrNull()?.message ?: "Failed to parse WireGuard config file"
+                _importError.value = err
+                _importedProfilePreview.value = null
+            }
+        } catch (e: Exception) {
+            _importError.value = "Failed to open file: ${e.message}"
+            _importedProfilePreview.value = null
+        }
+    }
+
+    fun confirmImportedProfile() {
+        val raw = pendingImportedRawConfig
+        val profile = _importedProfilePreview.value
+        if (raw != null && profile != null) {
+            _currentConfig.value = raw
+            OperationalLogCatcher.info(
+                LogCategory.CONFIG_VALIDATION,
+                "DiagnosticViewModel",
+                "Successfully imported and applied profile: ${profile.toRedactedSummary()}"
+            )
+        }
+        _importedProfilePreview.value = null
+        _importError.value = null
+        pendingImportedRawConfig = null
+    }
+
+    fun dismissImportDialog() {
+        _importedProfilePreview.value = null
+        _importError.value = null
+        pendingImportedRawConfig = null
+    }
+
+    private fun queryFileName(context: Context, uri: Uri): String? {
+        if (uri.scheme == "content") {
+            try {
+                context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (nameIndex != -1) {
+                            return cursor.getString(nameIndex)
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        return uri.lastPathSegment
     }
 }

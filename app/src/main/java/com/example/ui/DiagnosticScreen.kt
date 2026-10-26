@@ -28,14 +28,17 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -73,6 +76,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.config.WireGuardProfile
 import com.example.engine.SingBoxAdapter
 import com.example.logging.LogEvent
 import com.example.logging.LogSeverity
@@ -94,6 +98,8 @@ fun DiagnosticScreen(
     val isLoggingEnabled by viewModel.isLoggingEnabled.collectAsState()
     val selectedSeverity by viewModel.selectedSeverity.collectAsState()
     val currentConfig by viewModel.currentConfig.collectAsState()
+    val importedProfilePreview by viewModel.importedProfilePreview.collectAsState()
+    val importError by viewModel.importError.collectAsState()
 
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
@@ -107,6 +113,57 @@ fun DiagnosticScreen(
         } else {
             Toast.makeText(context, "VPN permission is required to create network tunnel", Toast.LENGTH_LONG).show()
         }
+    }
+
+    val importFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.loadConfigFile(context, uri)
+        }
+    }
+
+    if (importedProfilePreview != null) {
+        ImportProfileConfirmationDialog(
+            profile = importedProfilePreview!!,
+            onConfirm = {
+                viewModel.confirmImportedProfile()
+                Toast.makeText(context, "WireGuard profile successfully applied", Toast.LENGTH_SHORT).show()
+            },
+            onDismiss = { viewModel.dismissImportDialog() }
+        )
+    }
+
+    if (importError != null) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissImportDialog() },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Error,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Configuration Import Failed", fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Text(
+                    text = importError ?: "Unknown error while reading profile",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = { viewModel.dismissImportDialog() },
+                    modifier = Modifier.testTag("dismiss_import_error_button")
+                ) {
+                    Text("Dismiss")
+                }
+            }
+        )
     }
 
     Scaffold(
@@ -192,6 +249,7 @@ fun DiagnosticScreen(
                     currentConfig = currentConfig,
                     isEditing = showConfigEditor,
                     onToggleEdit = { showConfigEditor = !showConfigEditor },
+                    onImportClick = { importFileLauncher.launch(arrayOf("*/*")) },
                     onSaveConfig = {
                         viewModel.updateConfig(it)
                         showConfigEditor = false
@@ -399,6 +457,7 @@ private fun ConfigurationCard(
     currentConfig: String,
     isEditing: Boolean,
     onToggleEdit: () -> Unit,
+    onImportClick: () -> Unit,
     onSaveConfig: (String) -> Unit
 ) {
     var editedText by remember(currentConfig) { mutableStateOf(currentConfig) }
@@ -431,14 +490,33 @@ private fun ConfigurationCard(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                 }
-                OutlinedButton(
-                    onClick = onToggleEdit,
-                    shape = RoundedCornerShape(10.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Text(text = if (isEditing) "Cancel" else "Edit")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        onClick = onImportClick,
+                        shape = RoundedCornerShape(10.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("import_conf_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.FileOpen,
+                            contentDescription = "Import .conf file",
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(text = "Import .conf", style = MaterialTheme.typography.labelMedium)
+                    }
+                    Spacer(modifier = Modifier.width(6.dp))
+                    OutlinedButton(
+                        onClick = onToggleEdit,
+                        shape = RoundedCornerShape(10.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text(text = if (isEditing) "Cancel" else "Edit", style = MaterialTheme.typography.labelMedium)
+                    }
                 }
             }
 
@@ -468,7 +546,7 @@ private fun ConfigurationCard(
                 }
             } else {
                 Text(
-                    text = "Endpoint: 198.51.100.1:51820 | Tunnel IP: 172.19.0.2/30 | MTU: 1420",
+                    text = "Endpoint: 198.51.100.1:51820 (Placeholder / Test Endpoint) | Tunnel IP: 172.19.0.2/30 | MTU: 1420",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -482,6 +560,94 @@ private fun ConfigurationCard(
             }
         }
     }
+}
+
+@Composable
+private fun ImportProfileConfirmationDialog(
+    profile: WireGuardProfile,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.FileOpen,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Import WireGuard Profile",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Verify non-secret connection parameters below. Private and preshared keys are loaded into secure memory and strictly redacted from logs.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        profile.toDisplaySummary().forEach { (key, value) ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "$key:",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = value,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = if (value.contains("REDACTED")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.testTag("confirm_import_button")
+            ) {
+                Text("Confirm & Apply", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            OutlinedButton(
+                onClick = onDismiss,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.testTag("cancel_import_button")
+            ) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 @Composable

@@ -54,7 +54,7 @@ jobs:
       - name: Compile libbox.aar via official build_libbox
         working-directory: sing-box-source
         run: |
-          go run ./cmd/internal/build_libbox -target android
+          GOFLAGS="-ldflags=-s -w" go run ./cmd/internal/build_libbox -target android
 
       - name: Verify libbox.aar artifact
         run: |
@@ -96,19 +96,26 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Build Debug APK
+      - name: Build ARM64 Optimized Debug APK (~30 MB)
+        run: |
+          gradle :app:assembleDebug -PtargetAbi=arm64-v8a --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/vianshield-arm64-v8a-debug.apk
+
+      - name: Build Universal Debug APK (~128 MB)
         run: |
           gradle :app:assembleDebug --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/vianshield-universal-debug.apk
 
-      - name: Verify Debug APK exists
+      - name: Verify Debug APKs exist
         run: |
           test -f app/build/outputs/apk/debug/app-debug.apk
-          ls -lh app/build/outputs/apk/debug/app-debug.apk
+          test -f app/build/outputs/apk/debug/vianshield-arm64-v8a-debug.apk
+          ls -lh app/build/outputs/apk/debug/*.apk
 
-      - name: Upload Debug APK Artifact
+      - name: Upload Debug APK Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: vianshield-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: vianshield-debug-apks
+          path: app/build/outputs/apk/debug/*.apk
           retention-days: 14

@@ -1,0 +1,259 @@
+package com.example.config
+
+import org.json.JSONObject
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import java.io.ByteArrayInputStream
+
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [36])
+class WireGuardConfigParserTest {
+
+    // Standard 32-byte WireGuard keys: 43 Base64 chars + 1 '=' padding = 44 characters total
+    private val validPrivateKey = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa="
+    private val validPublicKey = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb="
+    private val validPresharedKey = "ccccccccccccccccccccccccccccccccccccccccccc="
+
+    @Test
+    fun parse_validStandardConfig_succeeds() {
+        val conf = """
+            [Interface]
+            PrivateKey = $validPrivateKey
+            Address = 10.0.0.2/24
+            DNS = 1.1.1.1, 8.8.8.8
+            MTU = 1420
+
+            [Peer]
+            PublicKey = $validPublicKey
+            PresharedKey = $validPresharedKey
+            Endpoint = 203.0.113.10:51820
+            AllowedIPs = 0.0.0.0/0, ::/0
+        """.trimIndent()
+
+        val result = WireGuardConfigParser.parse(conf, "Production Node")
+        assertTrue("Expected valid config to parse successfully: ${result.exceptionOrNull()?.message}", result.isSuccess)
+
+        val profile = result.getOrThrow()
+        assertEquals("Production Node", profile.name)
+        assertEquals(validPrivateKey, profile.privateKey)
+        assertEquals("10.0.0.2/24", profile.address)
+        assertEquals("1.1.1.1", profile.dns)
+        assertEquals(1420, profile.mtu)
+        assertEquals(validPublicKey, profile.peerPublicKey)
+        assertEquals(validPresharedKey, profile.presharedKey)
+        assertEquals("203.0.113.10", profile.endpointHost)
+        assertEquals(51820, profile.endpointPort)
+        assertEquals(listOf("0.0.0.0/0", "::/0"), profile.allowedIps)
+    }
+
+    @Test
+    fun parse_commentsAndWhitespace_handledCorrectly() {
+        val conf = """
+            # Global comment line
+            ; Semicolon comment line
+            
+            [Interface]
+               PrivateKey = $validPrivateKey  # inline comment with hash
+               Address = 172.16.0.5/32 ; inline comment with semicolon
+               DNS = 9.9.9.9
+               MTU = 1360
+            
+            # Peer comment
+            [Peer]
+               PublicKey = $validPublicKey
+               Endpoint = [2001:db8::1]:51820 # IPv6 endpoint
+               AllowedIPs = 10.0.0.0/8 , 192.168.0.0/16
+        """.trimIndent()
+
+        val result = WireGuardConfigParser.parse(conf, "Clean Node")
+        assertTrue("Expected config with comments & whitespace to parse successfully: ${result.exceptionOrNull()?.message}", result.isSuccess)
+
+        val profile = result.getOrThrow()
+        assertEquals(validPrivateKey, profile.privateKey)
+        assertEquals("172.16.0.5/32", profile.address)
+        assertEquals("9.9.9.9", profile.dns)
+        assertEquals(1360, profile.mtu)
+        assertEquals("2001:db8::1", profile.endpointHost)
+        assertEquals(51820, profile.endpointPort)
+        assertEquals(listOf("10.0.0.0/8", "192.168.0.0/16"), profile.allowedIps)
+    }
+
+    @Test
+    fun parse_addressWithoutCidr_autoAppendsSlash32() {
+        val conf = """
+            [Interface]
+            PrivateKey = $validPrivateKey
+            Address = 192.168.1.50
+            [Peer]
+            PublicKey = $validPublicKey
+            Endpoint = 198.51.100.2:51820
+        """.trimIndent()
+
+        val result = WireGuardConfigParser.parse(conf)
+        assertTrue("Expected address normalization to succeed: ${result.exceptionOrNull()?.message}", result.isSuccess)
+        assertEquals("192.168.1.50/32", result.getOrThrow().address)
+    }
+
+    @Test
+    fun parse_missingPrivateKey_fails() {
+        val conf = """
+            [Interface]
+            Address = 10.0.0.2/24
+            [Peer]
+            PublicKey = $validPublicKey
+            Endpoint = 198.51.100.2:51820
+        """.trimIndent()
+
+        val result = WireGuardConfigParser.parse(conf)
+        assertTrue("Expected failure for missing PrivateKey", result.isFailure)
+        assertTrue(result.exceptionOrNull()?.message?.contains("PrivateKey") == true)
+    }
+
+    @Test
+    fun parse_missingPublicKey_fails() {
+        val conf = """
+            [Interface]
+            PrivateKey = $validPrivateKey
+            Address = 10.0.0.2/24
+            [Peer]
+            Endpoint = 198.51.100.2:51820
+        """.trimIndent()
+
+        val result = WireGuardConfigParser.parse(conf)
+        assertTrue("Expected failure for missing PublicKey: ${result.exceptionOrNull()?.message}", result.isFailure)
+        assertTrue(result.exceptionOrNull()?.message?.contains("PublicKey") == true)
+    }
+
+    @Test
+    fun parse_missingEndpoint_fails() {
+        val conf = """
+            [Interface]
+            PrivateKey = $validPrivateKey
+            Address = 10.0.0.2/24
+            [Peer]
+            PublicKey = $validPublicKey
+        """.trimIndent()
+
+        val result = WireGuardConfigParser.parse(conf)
+        assertTrue("Expected failure for missing Endpoint: ${result.exceptionOrNull()?.message}", result.isFailure)
+        assertTrue(result.exceptionOrNull()?.message?.contains("Endpoint") == true)
+    }
+
+    @Test
+    fun parse_malformedEndpoint_fails() {
+        val invalidPorts = listOf(
+            "198.51.100.1",        // Missing port
+            "198.51.100.1:",       // Empty port
+            "198.51.100.1:abc",    // Non-numeric port
+            "198.51.100.1:0",      // Out of range (0)
+            "198.51.100.1:70000"   // Out of range (>65535)
+        )
+
+        for (badEndpoint in invalidPorts) {
+            val conf = """
+                [Interface]
+                PrivateKey = $validPrivateKey
+                Address = 10.0.0.2/24
+                [Peer]
+                PublicKey = $validPublicKey
+                Endpoint = $badEndpoint
+            """.trimIndent()
+
+            val result = WireGuardConfigParser.parse(conf)
+            assertTrue("Expected failure for malformed endpoint: $badEndpoint", result.isFailure)
+        }
+    }
+
+    @Test
+    fun parse_invalidKeyLengths_fail() {
+        val shortKeyConf = """
+            [Interface]
+            PrivateKey = tooShortKey==
+            Address = 10.0.0.2/24
+            [Peer]
+            PublicKey = $validPublicKey
+            Endpoint = 198.51.100.1:51820
+        """.trimIndent()
+
+        val result = WireGuardConfigParser.parse(shortKeyConf)
+        assertTrue("Expected failure for short key", result.isFailure)
+        assertTrue(result.exceptionOrNull()?.message?.contains("PrivateKey") == true)
+    }
+
+    @Test
+    fun parseFromInputStream_readsSuccessfully() {
+        val conf = WireGuardConfigParser.createDefaultTestConfig()
+        val stream = ByteArrayInputStream(conf.toByteArray(Charsets.UTF_8))
+        val result = WireGuardConfigParser.parseFromInputStream(stream, "StreamProfile")
+        assertTrue(result.isSuccess)
+        assertEquals("StreamProfile", result.getOrThrow().name)
+    }
+
+    @Test
+    fun secretRedaction_toRedactedSummaryAndDisplaySummary_neverLeaksKeys() {
+        val conf = """
+            [Interface]
+            PrivateKey = $validPrivateKey
+            Address = 10.0.0.2/24
+            DNS = 1.1.1.1
+            MTU = 1420
+            [Peer]
+            PublicKey = $validPublicKey
+            PresharedKey = $validPresharedKey
+            Endpoint = 198.51.100.1:51820
+        """.trimIndent()
+
+        val profile = WireGuardConfigParser.parse(conf).getOrThrow()
+
+        // Test toRedactedSummary()
+        val summary = profile.toRedactedSummary()
+        assertFalse("Summary must not contain PrivateKey", summary.contains(validPrivateKey))
+        assertFalse("Summary must not contain PresharedKey", summary.contains(validPresharedKey))
+        assertTrue("Summary must contain REDACTED", summary.contains("[REDACTED]"))
+
+        // Test toDisplaySummary()
+        val display = profile.toDisplaySummary()
+        assertFalse("Display summary must not contain raw PrivateKey", display.values.any { it.contains(validPrivateKey) })
+        assertFalse("Display summary must not contain raw PresharedKey", display.values.any { it.contains(validPresharedKey) })
+        assertTrue("Display summary must mark PrivateKey as redacted", display["Private Key"]?.contains("[REDACTED") == true)
+        assertTrue("Display summary must mark PresharedKey as redacted", display["Preshared Key"]?.contains("[REDACTED") == true)
+        // Public key snippet only
+        assertTrue("Display summary should only show snippet of public key", display["Peer Public Key"]?.contains("...") == true)
+    }
+
+    @Test
+    fun toSingBoxJson_producesVerifiedSchema() {
+        val conf = WireGuardConfigParser.createDefaultTestConfig()
+        val profile = WireGuardConfigParser.parse(conf).getOrThrow()
+        val jsonStr = WireGuardConfigParser.toSingBoxJson(profile)
+
+        val root = JSONObject(jsonStr)
+
+        // Verify route
+        val route = root.getJSONObject("route")
+        assertTrue("route.auto_detect_interface must be true", route.getBoolean("auto_detect_interface"))
+        assertEquals("wg-out", route.getString("final"))
+
+        // Verify inbounds
+        val inbounds = root.getJSONArray("inbounds")
+        val tun = inbounds.getJSONObject(0)
+        assertEquals("mixed", tun.getString("stack"))
+        assertEquals("vianshield-tun", tun.getString("interface_name"))
+        assertTrue("inbounds must contain address array", tun.has("address"))
+        assertEquals(profile.address, tun.getJSONArray("address").getString(0))
+
+        // Verify outbounds
+        val outbounds = root.getJSONArray("outbounds")
+        val wg = outbounds.getJSONObject(0)
+        assertEquals("wireguard", wg.getString("type"))
+        assertEquals(profile.endpointHost, wg.getString("server"))
+        assertEquals(profile.endpointPort, wg.getInt("server_port"))
+        assertEquals(profile.privateKey, wg.getString("private_key"))
+    }
+}

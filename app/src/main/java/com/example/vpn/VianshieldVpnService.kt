@@ -96,11 +96,11 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
             return
         }
 
-        _vpnState.value = VpnState.Starting("Validating configuration")
+        _vpnState.value = VpnState.Starting("STAGE 1: Validating WireGuard profile")
         OperationalLogCatcher.info(
             LogCategory.VPN_LIFECYCLE,
             "VpnService",
-            "Initiating VPN start sequence"
+            "STAGE 1: Initiating VPN start sequence"
         )
 
         serviceScope.launch {
@@ -108,7 +108,7 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
             val parseResult = WireGuardConfigParser.parse(rawConfig)
             if (parseResult.isFailure) {
                 val err = parseResult.exceptionOrNull()?.message ?: "Configuration parse failed"
-                OperationalLogCatcher.error(LogCategory.CONFIG_VALIDATION, "VpnService", err)
+                OperationalLogCatcher.error(LogCategory.CONFIG_VALIDATION, "VpnService", "STAGE 1 FAILED: $err")
                 _vpnState.value = VpnState.Error("ERR_CONFIG_INVALID", err)
                 stopForegroundSafely()
                 return@launch
@@ -118,13 +118,18 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
             activeProfile = profile
 
             // 2. Transform to sing-box v1.11 JSON
-            _vpnState.value = VpnState.Starting("Generating sing-box configuration")
+            _vpnState.value = VpnState.Starting("STAGE 2: Generating sing-box configuration")
             val singBoxJson = WireGuardConfigParser.toSingBoxJson(profile)
+            OperationalLogCatcher.info(
+                LogCategory.CONFIG_VALIDATION,
+                "VpnService",
+                "STAGE 2: Generated sing-box configuration (mixed stack, route auto_detect=true, address=${profile.address})"
+            )
 
             // 3. Verify native binary availability before claiming connection
             if (!singBoxEngine.isNativeBinaryAvailable()) {
                 val missingMsg = "sing-box native engine (libbox.aar) has not been compiled yet. Run the GitHub Actions workflow (.github/workflows/build-vianshield.yml) to generate libbox.aar."
-                OperationalLogCatcher.error(LogCategory.ENGINE_INIT, "VpnService", missingMsg)
+                OperationalLogCatcher.error(LogCategory.ENGINE_INIT, "VpnService", "STAGE 2 FAILED: $missingMsg")
                 _vpnState.value = VpnState.Error("ERR_NATIVE_AAR_PENDING", missingMsg)
                 stopForegroundSafely()
                 return@launch
@@ -134,22 +139,22 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
             startForeground(NOTIFICATION_ID, buildNotification("Starting Vianshield Tunnel…"))
 
             // 5. Initialize engine adapter
-            _vpnState.value = VpnState.Starting("Initializing sing-box core")
+            _vpnState.value = VpnState.Starting("STAGE 3: Initializing native BoxService core")
             val initResult = singBoxEngine.initialize(singBoxJson, this@VianshieldVpnService)
             if (initResult.isFailure) {
                 val err = initResult.exceptionOrNull()?.message ?: "Engine initialization failed"
-                OperationalLogCatcher.error(LogCategory.ENGINE_INIT, "VpnService", err)
+                OperationalLogCatcher.error(LogCategory.ENGINE_INIT, "VpnService", "STAGE 3 FAILED: $err")
                 _vpnState.value = VpnState.Error("ERR_ENGINE_INIT", err)
                 stopForegroundSafely()
                 return@launch
             }
 
             // 6. Start sing-box engine (engine calls openTun callback during startup)
-            _vpnState.value = VpnState.Starting("Starting sing-box routing core")
+            _vpnState.value = VpnState.Starting("STAGE 4: Starting sing-box routing core")
             val engineStartResult = singBoxEngine.start()
             if (engineStartResult.isFailure) {
                 val err = engineStartResult.exceptionOrNull()?.message ?: "Engine start failed"
-                OperationalLogCatcher.error(LogCategory.ENGINE_INIT, "VpnService", err)
+                OperationalLogCatcher.error(LogCategory.ENGINE_INIT, "VpnService", "STAGE 4 FAILED: $err")
                 _vpnState.value = VpnState.Error("ERR_ENGINE_START", err)
                 singBoxEngine.stop()
                 releaseTunFd()
@@ -168,7 +173,7 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
             OperationalLogCatcher.info(
                 LogCategory.VPN_LIFECYCLE,
                 "VpnService",
-                "VPN tunnel and sing-box engine successfully running"
+                "STAGE 5: VPN tunnel and sing-box engine successfully running"
             )
         }
     }
@@ -209,6 +214,12 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
         }
 
         return try {
+            OperationalLogCatcher.info(
+                LogCategory.TUN_INTERFACE,
+                "VpnService",
+                "STAGE 4A: openTun requested by native engine (options: ${options?.javaClass?.name ?: "null"})"
+            )
+
             val builder = Builder()
                 .setSession("Vianshield VPN")
                 .setMtu(profile.mtu)
@@ -226,7 +237,7 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
 
             val pfd: ParcelFileDescriptor? = builder.establish()
             if (pfd == null) {
-                OperationalLogCatcher.error(LogCategory.TUN_INTERFACE, "VpnService", "Builder.establish() returned null")
+                OperationalLogCatcher.error(LogCategory.TUN_INTERFACE, "VpnService", "Builder.establish() returned null (VPN permission or configuration issue)")
                 return -1
             }
 
@@ -237,7 +248,7 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
             OperationalLogCatcher.info(
                 LogCategory.TUN_INTERFACE,
                 "VpnService",
-                "TUN interface established and detached: fd=$rawFd, address=$ip/$prefix, mtu=${profile.mtu}"
+                "STAGE 4B: TUN interface established and detached: fd=$rawFd, address=$ip/$prefix, mtu=${profile.mtu}"
             )
             rawFd
         } catch (e: Exception) {

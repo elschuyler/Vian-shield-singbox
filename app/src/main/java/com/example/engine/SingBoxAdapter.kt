@@ -4,6 +4,7 @@ import com.example.logging.LogCategory
 import com.example.logging.OperationalLogCatcher
 import org.json.JSONObject
 import java.lang.reflect.InvocationHandler
+import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 import java.util.concurrent.atomic.AtomicBoolean
@@ -90,6 +91,7 @@ class SingBoxAdapter(
 
     private fun initializeNativeService(configJson: String, callback: SingBoxPlatformCallback): Result<Unit> {
         return try {
+            OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 2A: Resolving Libbox and PlatformInterface classes...")
             val libboxCls = Class.forName(LIBBOX_CLASS)
             val platformInterfaceCls = Class.forName(PLATFORM_INTERFACE_CLASS)
 
@@ -104,6 +106,7 @@ class SingBoxAdapter(
                 proxyHandler
             )
 
+            OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 2B: Calling Libbox.newService()...")
             // Libbox.newService(configJson, platformInterface)
             val newServiceMethod = libboxCls.getMethod("newService", String::class.java, platformInterfaceCls)
             nativeServiceInstance = newServiceMethod.invoke(null, configJson, proxy)
@@ -111,23 +114,33 @@ class SingBoxAdapter(
             OperationalLogCatcher.info(
                 LogCategory.ENGINE_INIT,
                 "SingBoxAdapter",
-                "Native BoxService instantiated with dynamic PlatformInterface bridge"
+                "STAGE 2C: Native BoxService instantiated with dynamic PlatformInterface bridge"
             )
             Result.success(Unit)
         } catch (e: Exception) {
-            val err = "Failed to initialize native sing-box BoxService: ${e.message}"
-            OperationalLogCatcher.error(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", err)
-            Result.failure(e)
+            val root = unwrapReflectionException(e)
+            val err = "Failed to initialize native sing-box BoxService [${root.javaClass.name}]: ${root.message ?: root.toString()}"
+            OperationalLogCatcher.error(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", "$err\n${root.stackTraceToString().lines().take(10).joinToString("\n")}")
+            Result.failure(root)
         }
     }
 
     private fun handlePlatformInterfaceCall(method: Method, args: Array<Any>?, callback: SingBoxPlatformCallback): Any? {
         val methodName = method.name
+        val argSummary = args?.joinToString { it?.javaClass?.simpleName ?: "null" } ?: "none"
+        OperationalLogCatcher.info(
+            LogCategory.ENGINE_INIT,
+            "SingBoxAdapter",
+            "STAGE 4 [PlatformCallback]: $methodName($argSummary) -> returnType=${method.returnType.simpleName}"
+        )
+
         return when {
             methodName.equals("openTun", ignoreCase = true) -> {
                 val options = args?.firstOrNull()
-                OperationalLogCatcher.info(LogCategory.TUN_INTERFACE, "SingBoxAdapter", "Native engine requested OpenTun")
-                callback.openTun(options)
+                OperationalLogCatcher.info(LogCategory.TUN_INTERFACE, "SingBoxAdapter", "STAGE 4A: Native engine requested OpenTun")
+                val fd = callback.openTun(options)
+                OperationalLogCatcher.info(LogCategory.TUN_INTERFACE, "SingBoxAdapter", "STAGE 4B: OpenTun returned fd=$fd to native engine")
+                fd
             }
             methodName.equals("usePlatformAutoDetectInterfaceControl", ignoreCase = true) -> {
                 true // Instruct sing-box to call autoDetectInterfaceControl for outbound sockets
@@ -168,21 +181,31 @@ class SingBoxAdapter(
         val service = nativeServiceInstance
         if (service != null) {
             return try {
+                OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 3A: Locating start() on ${service.javaClass.name}...")
                 val startMethod = service.javaClass.getMethod("start")
+                OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 3B: Invoking BoxService.start()...")
                 startMethod.invoke(service)
                 isEngineRunning.set(true)
-                OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "Native sing-box BoxService started successfully")
+                OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 3C: Native sing-box BoxService started successfully")
                 Result.success(Unit)
             } catch (e: Exception) {
-                val err = "Native sing-box BoxService failed to start: ${e.message}"
-                OperationalLogCatcher.error(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", err)
+                val root = unwrapReflectionException(e)
+                val rootName = root.javaClass.name
+                val rootMsg = root.message ?: root.localizedMessage ?: root.toString()
+                val stackPreview = root.stackTraceToString().lines().take(12).joinToString("\n")
+                val err = "Native sing-box BoxService failed to start [$rootName]: $rootMsg"
+                OperationalLogCatcher.error(
+                    LogCategory.ERROR_DIAGNOSTIC,
+                    "SingBoxAdapter",
+                    "$err\nCause chain: ${describeCauseChain(root)}\nStack trace:\n$stackPreview"
+                )
                 platformCallback?.onError("ERR_START_FAILED", err)
                 try {
                     val closeMethod = service.javaClass.methods.firstOrNull { it.name.equals("close", ignoreCase = true) }
                     closeMethod?.invoke(service)
                 } catch (_: Exception) {}
                 nativeServiceInstance = null
-                Result.failure(e)
+                Result.failure(root)
             }
         }
 
@@ -210,7 +233,8 @@ class SingBoxAdapter(
                 closeMethod?.invoke(service)
                 nativeServiceInstance = null
             } catch (e: Exception) {
-                val err = "Exception while closing native BoxService: ${e.message}"
+                val root = unwrapReflectionException(e)
+                val err = "Exception while closing native BoxService: ${root.message ?: root.toString()}"
                 OperationalLogCatcher.warn(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", err)
                 nativeServiceInstance = null
             }
@@ -219,5 +243,26 @@ class SingBoxAdapter(
         isEngineRunning.set(false)
         OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "Sing-box engine stopped and native resources released cleanly")
         return Result.success(Unit)
+    }
+
+    private fun unwrapReflectionException(e: Throwable): Throwable {
+        var current = e
+        while (current is InvocationTargetException && current.targetException != null) {
+            current = current.targetException
+        }
+        return current
+    }
+
+    private fun describeCauseChain(throwable: Throwable): String {
+        val sb = StringBuilder()
+        var curr: Throwable? = throwable
+        var depth = 0
+        while (curr != null && depth < 6) {
+            if (depth > 0) sb.append(" -> ")
+            sb.append("[${curr.javaClass.simpleName}]: ${curr.message}")
+            curr = curr.cause
+            depth++
+        }
+        return sb.toString()
     }
 }

@@ -18,6 +18,14 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    // Priority 4: Support single-ABI build targeting (e.g. -PtargetAbi=arm64-v8a) to reduce APK size to ~30MB
+    val targetAbi = project.findProperty("targetAbi") as? String
+    if (!targetAbi.isNullOrBlank()) {
+      ndk {
+        abiFilters.add(targetAbi)
+      }
+    }
   }
 
   // Do not remove or modify these signingConfigs. They are necessary for building, installing,

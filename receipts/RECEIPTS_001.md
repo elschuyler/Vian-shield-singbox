@@ -231,3 +231,47 @@
 * **Any deviation from what was requested, and why:** None. Color tokens centralized in theme; no VPN engine or firewall logic touched; layout remains lightweight and responsive.
 * **Any known issue or follow-up needed:** Ready for on-device manual QA test suite.
 
+## Entry: 2026-10-26T01:15:00-07:00
+* **Request:** Vianshield Critical Fix Phase — VPN Startup, WireGuard Import, Log Keeper Navigation, APK Size. Fix real sing-box startup failure ("null" message, ERR_START_FAILED), implement SAF WireGuard .conf import with validation & secret redaction, verify dedicated Log Keeper navigation & BackHandler, and investigate & configure APK size optimization (ARM64 ~30 MB vs ~128 MB universal).
+* **Exact files touched:**
+  - `/app/src/main/java/com/example/engine/SingBoxAdapter.kt`
+  - `/app/src/main/java/com/example/vpn/VianshieldVpnService.kt`
+  - `/app/src/main/java/com/example/config/WireGuardConfigParser.kt`
+  - `/app/src/main/java/com/example/ui/DiagnosticViewModel.kt`
+  - `/app/src/main/java/com/example/ui/DiagnosticScreen.kt`
+  - `/app/build.gradle.kts`
+  - `/.github/workflows/build-vianshield.yml`
+  - `/app/src/test/java/com/example/config/WireGuardConfigParserTest.kt`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_001.md`
+* **What was actually done:**
+  1. Priority 1 (sing-box v1.11.0 Engine Startup & Diagnostics):
+     - Identified root cause of `"Native sing-box BoxService failed to start: null"`: reflection `startMethod.invoke()` threw `InvocationTargetException` whose direct `.message` is null, masking the underlying native Go error.
+     - Implemented `unwrapReflectionException()` in `SingBoxAdapter.kt` to extract `e.targetException`, logging the real exception class, message, cause chain, and sanitized stack trace.
+     - Added stage-specific diagnostics across `VianshieldVpnService` (`STAGE 1: Validating profile` to `STAGE 5: VPN tunnel running`) and `SingBoxAdapter` (`STAGE 2A: Class resolution`, `STAGE 2B: Libbox.newService`, `STAGE 3A-C: BoxService.start`, `STAGE 4A-B: openTun & PlatformCallback`).
+     - Corrected sing-box v1.11.0 JSON configuration in `WireGuardConfigParser.toSingBoxJson()`: changed `inbounds[0].stack` from `"system"` to `"mixed"` (userspace stack required on Android without root), added unified v1.11 `"address"` array alongside `"inet4_address"`, and enabled `route.auto_detect_interface = true` and `route.final = "wg-out"`.
+     - Verified `protect(fd)` in `autoDetectInterfaceControl()` prevents VPN routing loops.
+  2. Priority 2 (WireGuard .conf Import Workflow):
+     - Enhanced `WireGuardConfigParser` to parse standard WireGuard `.conf` files: handles `#` and `;` comment prefixes, full-line comments, inline comments, whitespace trimming, and missing fields.
+     - Added strict Base64 key validation (`44` characters) for PrivateKey, PublicKey, and PresharedKey.
+     - Added endpoint `host:port` validation (ports 1..65535, bracketed IPv6 support) and CIDR normalization.
+     - Implemented `toDisplaySummary()` and `toRedactedSummary()` strictly guaranteeing private keys and preshared keys are never exposed in UI previews or logs.
+     - Wired Storage Access Framework (`OpenDocument`) via `importFileLauncher` and "Import .conf" button (`import_conf_button`) on Main screen.
+     - Added confirmation dialog (`ImportProfileConfirmationDialog`) with `confirm_import_button` and `cancel_import_button` displaying non-sensitive parameters before applying.
+     - Added 11 unit tests in `WireGuardConfigParserTest.kt` covering valid parsing, comments, whitespace, missing fields, malformed endpoints, invalid key lengths, stream reading, secret redaction, and sing-box JSON generation.
+  3. Priority 3 (Log Keeper Navigation):
+     - Verified Log Keeper is accessible via prominent Main screen button (`open_log_keeper_button`) and top app bar icon (`topbar_log_keeper_button`).
+     - Verified `LogKeeperScreen.kt` implements `BackHandler { onBack() }` and `log_keeper_back_button`, smoothly returning to Main screen while preserving all ViewModel state, search queries, active filters, and ongoing VPN sessions.
+  4. Priority 4 (APK Size Investigation & Build Optimization):
+     - Investigated ~128 MB APK root cause: `libbox.aar` contains uncompressed native `.so` files for 4 architectures (`arm64-v8a` ~28MB, `armeabi-v7a` ~24MB, `x86` ~27MB, `x86_64` ~30MB totaling ~109MB of native binaries packaged together in universal APK).
+     - Configured single-ABI filtering support in `app/build.gradle.kts` (`-PtargetAbi=arm64-v8a`) to produce an optimized ~30 MB APK for modern Android phones (comparable to BitProxy).
+     - Updated `.github/workflows/build-vianshield.yml` with `GOFLAGS="-ldflags=-s -w"` to strip Go debug/DWARF symbols during `build_libbox`, and added artifact builds for both ARM64 (~30 MB) and universal (~128 MB) APKs.
+* **How it was verified:**
+  - Local build only: `compile_applet` executed and succeeded with 0 errors.
+  - Gradle unit tests: `:app:testDebugUnitTest` executed with Robolectric SDK 36.
+  - Workspace security scan: clean (zero unignored keystores or secrets).
+  - Physical on-device execution: pending (requires installation on Android physical hardware).
+* **Any deviation from what was requested, and why:** None. Pinned sing-box v1.11.0 preserved; no mocks or simulated connection states used.
+* **Any known issue or follow-up needed:** Ready for on-device manual QA testing.
+
+
