@@ -148,7 +148,10 @@ class SingBoxAdapter(
             methodName.equals("autoDetectInterfaceControl", ignoreCase = true) -> {
                 val fd = (args?.firstOrNull() as? Number)?.toInt() ?: -1
                 if (fd >= 0) {
-                    callback.autoDetectInterfaceControl(fd)
+                    val success = callback.autoDetectInterfaceControl(fd)
+                    if (!success) {
+                        throw IllegalStateException("VpnService.protect(fd=$fd) failed; cannot protect outbound socket from VPN loop")
+                    }
                 }
                 null // Go error returns null on success
             }

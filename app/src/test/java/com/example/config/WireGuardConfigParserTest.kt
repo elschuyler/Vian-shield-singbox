@@ -44,6 +44,7 @@ class WireGuardConfigParserTest {
         assertEquals(validPrivateKey, profile.privateKey)
         assertEquals("10.0.0.2/24", profile.address)
         assertEquals("1.1.1.1", profile.dns)
+        assertEquals(listOf("1.1.1.1", "8.8.8.8"), profile.dnsServers)
         assertEquals(1420, profile.mtu)
         assertEquals(validPublicKey, profile.peerPublicKey)
         assertEquals(validPresharedKey, profile.presharedKey)
@@ -239,11 +240,15 @@ class WireGuardConfigParserTest {
         val route = root.getJSONObject("route")
         assertTrue("route.auto_detect_interface must be true", route.getBoolean("auto_detect_interface"))
         assertEquals("wg-out", route.getString("final"))
+        val rules = route.getJSONArray("rules")
+        assertTrue("rules must contain at least 2 rules", rules.length() >= 2)
+        assertEquals("dns", rules.getJSONObject(0).getString("protocol"))
+        assertEquals("dns-out", rules.getJSONObject(0).getString("outbound"))
 
         // Verify inbounds
         val inbounds = root.getJSONArray("inbounds")
         val tun = inbounds.getJSONObject(0)
-        assertEquals("mixed", tun.getString("stack"))
+        assertEquals("gvisor", tun.getString("stack"))
         assertEquals("vianshield-tun", tun.getString("interface_name"))
         assertTrue("inbounds must contain address array", tun.has("address"))
         assertEquals(profile.address, tun.getJSONArray("address").getString(0))
@@ -255,5 +260,176 @@ class WireGuardConfigParserTest {
         assertEquals(profile.endpointHost, wg.getString("server"))
         assertEquals(profile.endpointPort, wg.getInt("server_port"))
         assertEquals(profile.privateKey, wg.getString("private_key"))
+
+        val dnsOut = outbounds.getJSONObject(1)
+        assertEquals("dns", dnsOut.getString("type"))
+        assertEquals("dns-out", dnsOut.getString("tag"))
+
+        // Verify DNS detour
+        val dns = root.getJSONObject("dns")
+        val dnsServers = dns.getJSONArray("servers")
+        assertTrue(dnsServers.length() > 0)
+        assertEquals("wg-out", dnsServers.getJSONObject(0).getString("detour"))
+    }
+
+    @Test
+    fun parse_multiAddress_ipv4AndIpv6_succeeds() {
+        val conf = """
+            [Interface]
+            PrivateKey = $validPrivateKey
+            Address = 10.0.0.2/24, fd00::2/64
+            DNS = 1.1.1.1, 8.8.8.8
+            [Peer]
+            PublicKey = $validPublicKey
+            Endpoint = 198.51.100.1:51820
+        """.trimIndent()
+
+        val result = WireGuardConfigParser.parse(conf, "DualStack")
+        assertTrue("Expected dual stack parsing to succeed: ${result.exceptionOrNull()?.message}", result.isSuccess)
+        val profile = result.getOrThrow()
+        assertEquals("10.0.0.2/24", profile.address)
+        assertEquals(listOf("10.0.0.2/24", "fd00::2/64"), profile.addresses)
+        assertEquals("1.1.1.1", profile.dns)
+        assertEquals(listOf("1.1.1.1", "8.8.8.8"), profile.dnsServers)
+
+        // Verify JSON includes both addresses
+        val json = JSONObject(WireGuardConfigParser.toSingBoxJson(profile))
+        val tunAddresses = json.getJSONArray("inbounds").getJSONObject(0).getJSONArray("address")
+        assertEquals(2, tunAddresses.length())
+        assertEquals("10.0.0.2/24", tunAddresses.getString(0))
+        assertEquals("fd00::2/64", tunAddresses.getString(1))
+    }
+
+    @Test
+    fun parse_persistentKeepalive_succeedsAndIncludedInJson() {
+        val conf = """
+            [Interface]
+            PrivateKey = $validPrivateKey
+            Address = 10.0.0.2/24
+            [Peer]
+            PublicKey = $validPublicKey
+            Endpoint = 198.51.100.1:51820
+            PersistentKeepalive = 25
+        """.trimIndent()
+
+        val result = WireGuardConfigParser.parse(conf)
+        assertTrue(result.isSuccess)
+        val profile = result.getOrThrow()
+        assertEquals(25, profile.persistentKeepalive)
+
+        val json = JSONObject(WireGuardConfigParser.toSingBoxJson(profile))
+        val wgOutbound = json.getJSONArray("outbounds").getJSONObject(0)
+        assertTrue("WireGuard outbound must contain persistent_keepalive_interval", wgOutbound.has("persistent_keepalive_interval"))
+        assertEquals(25, wgOutbound.getInt("persistent_keepalive_interval"))
+    }
+
+    @Test
+    fun parse_multiplePeers_failsWithClearError() {
+        val conf = """
+            [Interface]
+            PrivateKey = $validPrivateKey
+            Address = 10.0.0.2/24
+            [Peer]
+            PublicKey = $validPublicKey
+            Endpoint = 198.51.100.1:51820
+            [Peer]
+            PublicKey = $validPublicKey
+            Endpoint = 198.51.100.2:51820
+        """.trimIndent()
+
+        val result = WireGuardConfigParser.parse(conf)
+        assertTrue("Expected failure when multiple peers exist", result.isFailure)
+        val err = result.exceptionOrNull()?.message ?: ""
+        assertTrue("Error must explain multiple peers are not supported: $err", err.contains("Multiple [Peer] sections are not supported"))
+    }
+
+    @Test
+    fun parse_unsupportedSection_failsWithClearError() {
+        val conf = """
+            [Interface]
+            PrivateKey = $validPrivateKey
+            Address = 10.0.0.2/24
+            [BadSection]
+            Foo = Bar
+            [Peer]
+            PublicKey = $validPublicKey
+            Endpoint = 198.51.100.1:51820
+        """.trimIndent()
+
+        val result = WireGuardConfigParser.parse(conf)
+        assertTrue("Expected failure for unsupported section", result.isFailure)
+        val err = result.exceptionOrNull()?.message ?: ""
+        assertTrue("Error must mention unsupported section: $err", err.contains("Unsupported section"))
+    }
+
+    @Test
+    fun parse_omittedMtu_defaultsTo1280() {
+        val conf = """
+            [Interface]
+            PrivateKey = $validPrivateKey
+            Address = 10.0.0.2/24
+            [Peer]
+            PublicKey = $validPublicKey
+            Endpoint = 198.51.100.1:51820
+        """.trimIndent()
+
+        val result = WireGuardConfigParser.parse(conf)
+        assertTrue(result.isSuccess)
+        val profile = result.getOrThrow()
+        assertEquals("Omitted MTU must default to mobile-safe 1280", 1280, profile.mtu)
+    }
+
+    @Test
+    fun parse_oversizedMtu_clampedTo1420() {
+        val conf = """
+            [Interface]
+            PrivateKey = $validPrivateKey
+            Address = 10.0.0.2/24
+            MTU = 1500
+            [Peer]
+            PublicKey = $validPublicKey
+            Endpoint = 198.51.100.1:51820
+        """.trimIndent()
+
+        val result = WireGuardConfigParser.parse(conf)
+        assertTrue(result.isSuccess)
+        val profile = result.getOrThrow()
+        assertEquals("MTU > 1420 must be clamped to MAX_MTU 1420", 1420, profile.mtu)
+    }
+
+    @Test
+    fun parse_undersizedMtu_clampedTo1280() {
+        val conf = """
+            [Interface]
+            PrivateKey = $validPrivateKey
+            Address = 10.0.0.2/24
+            MTU = 1100
+            [Peer]
+            PublicKey = $validPublicKey
+            Endpoint = 198.51.100.1:51820
+        """.trimIndent()
+
+        val result = WireGuardConfigParser.parse(conf)
+        assertTrue(result.isSuccess)
+        val profile = result.getOrThrow()
+        assertEquals("MTU < 1280 must be clamped to MIN_MTU 1280", 1280, profile.mtu)
+    }
+
+    @Test
+    fun parse_validCustomMtu_preserved() {
+        val conf = """
+            [Interface]
+            PrivateKey = $validPrivateKey
+            Address = 10.0.0.2/24
+            MTU = 1360
+            [Peer]
+            PublicKey = $validPublicKey
+            Endpoint = 198.51.100.1:51820
+        """.trimIndent()
+
+        val result = WireGuardConfigParser.parse(conf)
+        assertTrue(result.isSuccess)
+        val profile = result.getOrThrow()
+        assertEquals("Valid custom MTU within [1280, 1420] must be preserved", 1360, profile.mtu)
     }
 }

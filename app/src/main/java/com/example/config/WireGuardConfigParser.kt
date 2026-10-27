@@ -9,16 +9,19 @@ data class WireGuardProfile(
     val name: String,
     val privateKey: String,
     val address: String,
+    val addresses: List<String> = listOf(address),
     val dns: String = "1.1.1.1",
-    val mtu: Int = 1420,
+    val dnsServers: List<String> = listOf(dns),
+    val mtu: Int = WireGuardConfigParser.DEFAULT_MTU,
     val peerPublicKey: String,
     val presharedKey: String? = null,
     val endpointHost: String,
     val endpointPort: Int,
-    val allowedIps: List<String> = listOf("0.0.0.0/0")
+    val allowedIps: List<String> = listOf("0.0.0.0/0"),
+    val persistentKeepalive: Int? = null
 ) {
     fun toRedactedSummary(): String {
-        return "Profile '$name': Endpoint=$endpointHost:$endpointPort, Address=$address, MTU=$mtu, DNS=$dns, AllowedIPs=${allowedIps.joinToString(",")}, Keys=[REDACTED]"
+        return "Profile '$name': Endpoint=$endpointHost:$endpointPort, Addresses=${addresses.joinToString(",")}, MTU=$mtu, DNS=${dnsServers.joinToString(",")}, Keepalive=${persistentKeepalive ?: "none"}, AllowedIPs=${allowedIps.joinToString(",")}, Keys=[REDACTED]"
     }
 
     /**
@@ -33,9 +36,10 @@ data class WireGuardProfile(
         return linkedMapOf(
             "Profile Name" to name,
             "Server Endpoint" to "$endpointHost:$endpointPort",
-            "Tunnel IP (Address)" to address,
-            "DNS Server" to dns,
+            "Tunnel IP (Address)" to addresses.joinToString(", "),
+            "DNS Servers" to dnsServers.joinToString(", "),
             "Tunnel MTU" to mtu.toString(),
+            "Persistent Keepalive" to (persistentKeepalive?.let { "${it}s" } ?: "Disabled"),
             "Allowed IPs" to allowedIps.joinToString(", "),
             "Peer Public Key" to pubKeySnippet,
             "Private Key" to "[REDACTED - 44 chars validated]",
@@ -46,19 +50,25 @@ data class WireGuardProfile(
 
 object WireGuardConfigParser {
 
+    const val DEFAULT_MTU = 1280
+    const val MIN_MTU = 1280
+    const val MAX_MTU = 1420
+
     private val BASE64_PATTERN = Regex("^[A-Za-z0-9+/=]{44}$")
 
     fun parse(confContent: String, profileName: String = "Default Profile"): Result<WireGuardProfile> {
         val lines = confContent.lines()
 
         var currentSection = ""
+        var peerCount = 0
         var privateKey: String? = null
-        var address: String? = null
-        var dns: String = "1.1.1.1"
-        var mtu: Int = 1420
+        val rawAddresses = mutableListOf<String>()
+        val rawDnsServers = mutableListOf<String>()
+        var mtu: Int = DEFAULT_MTU
         var peerPublicKey: String? = null
         var presharedKey: String? = null
         var endpoint: String? = null
+        var persistentKeepalive: Int? = null
         val allowedIps = mutableListOf<String>()
 
         for (rawLine in lines) {
@@ -68,6 +78,18 @@ object WireGuardConfigParser {
             if (line.startsWith("[") && line.contains("]")) {
                 val endIdx = line.indexOf("]")
                 currentSection = line.substring(1, endIdx).trim().lowercase()
+                if (currentSection == "peer") {
+                    peerCount++
+                    if (peerCount > 1) {
+                        val err = "Multiple [Peer] sections are not supported in single-tunnel mode (found $peerCount peers)"
+                        OperationalLogCatcher.error(LogCategory.CONFIG_VALIDATION, "ConfigParser", err)
+                        return Result.failure(IllegalArgumentException(err))
+                    }
+                } else if (currentSection != "interface") {
+                    val err = "Unsupported section '[$currentSection]' in WireGuard configuration"
+                    OperationalLogCatcher.error(LogCategory.CONFIG_VALIDATION, "ConfigParser", err)
+                    return Result.failure(IllegalArgumentException(err))
+                }
                 continue
             }
 
@@ -82,9 +104,18 @@ object WireGuardConfigParser {
                 "interface" -> {
                     when (key) {
                         "privatekey" -> privateKey = rawValue
-                        "address" -> address = rawValue.split(",").firstOrNull()?.trim()
-                        "dns" -> dns = rawValue.split(",").firstOrNull()?.trim() ?: "1.1.1.1"
-                        "mtu" -> mtu = rawValue.toIntOrNull() ?: 1420
+                        "address" -> {
+                            val splitAddresses = rawValue.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                            rawAddresses.addAll(splitAddresses)
+                        }
+                        "dns" -> {
+                            val splitDns = rawValue.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                            rawDnsServers.addAll(splitDns)
+                        }
+                        "mtu" -> {
+                            val parsed = rawValue.toIntOrNull()
+                            mtu = if (parsed != null) parsed.coerceIn(MIN_MTU, MAX_MTU) else DEFAULT_MTU
+                        }
                     }
                 }
                 "peer" -> {
@@ -92,6 +123,7 @@ object WireGuardConfigParser {
                         "publickey" -> peerPublicKey = rawValue
                         "presharedkey" -> presharedKey = rawValue
                         "endpoint" -> endpoint = rawValue
+                        "persistentkeepalive" -> persistentKeepalive = rawValue.toIntOrNull()
                         "allowedips" -> allowedIps.addAll(rawValue.split(",").map { it.trim() }.filter { it.isNotEmpty() })
                     }
                 }
@@ -111,18 +143,24 @@ object WireGuardConfigParser {
             return Result.failure(IllegalArgumentException(err))
         }
 
-        if (address.isNullOrBlank()) {
+        if (rawAddresses.isEmpty()) {
             val err = "Missing or empty Address in [Interface]"
             OperationalLogCatcher.error(LogCategory.CONFIG_VALIDATION, "ConfigParser", err)
             return Result.failure(IllegalArgumentException(err))
         }
 
-        // Normalize address CIDR notation (e.g. 10.0.0.2 -> 10.0.0.2/32)
-        val normalizedAddress = if (!address.contains("/")) {
-            if (address.contains(":")) "$address/128" else "$address/32"
-        } else {
-            address
+        // Normalize address CIDR notation (e.g. 10.0.0.2 -> 10.0.0.2/32, fd00::2 -> fd00::2/128)
+        val normalizedAddresses = rawAddresses.map { addr ->
+            if (!addr.contains("/")) {
+                if (addr.contains(":")) "$addr/128" else "$addr/32"
+            } else {
+                addr
+            }
         }
+        val primaryAddress = normalizedAddresses.first()
+
+        val finalDnsServers = if (rawDnsServers.isEmpty()) listOf("1.1.1.1") else rawDnsServers
+        val primaryDns = finalDnsServers.first()
 
         if (peerPublicKey.isNullOrBlank()) {
             val err = "Missing or empty PublicKey in [Peer]"
@@ -169,14 +207,17 @@ object WireGuardConfigParser {
         val profile = WireGuardProfile(
             name = profileName,
             privateKey = privateKey,
-            address = normalizedAddress,
-            dns = dns,
+            address = primaryAddress,
+            addresses = normalizedAddresses,
+            dns = primaryDns,
+            dnsServers = finalDnsServers,
             mtu = mtu,
             peerPublicKey = peerPublicKey,
             presharedKey = presharedKey,
             endpointHost = host,
             endpointPort = port,
-            allowedIps = finalAllowedIps
+            allowedIps = finalAllowedIps,
+            persistentKeepalive = persistentKeepalive
         )
 
         OperationalLogCatcher.info(
@@ -205,8 +246,8 @@ object WireGuardConfigParser {
 
     /**
      * Converts a validated WireGuardProfile to sing-box v1.11 compatible JSON.
-     * Uses "mixed" userspace stack on Android so that raw packets from openTun
-     * are processed by sing-box without requiring root system netlink.
+     * Uses "gvisor" userspace stack on Android so that raw IP packets from openTun
+     * are translated into TCP/UDP connections by sing-box without requiring root system netlink.
      */
     fun toSingBoxJson(profile: WireGuardProfile): String {
         val root = JSONObject()
@@ -218,39 +259,42 @@ object WireGuardConfigParser {
         logObj.put("timestamp", true)
         root.put("log", logObj)
 
-        // DNS configuration
+        // DNS configuration with detour to WireGuard outbound
         val dnsObj = JSONObject()
         val serversArray = JSONArray()
-        val dnsServer = JSONObject()
-        dnsServer.put("tag", "dns-remote")
-        dnsServer.put("address", profile.dns)
-        serversArray.put(dnsServer)
+        for (dns in profile.dnsServers) {
+            val dnsServer = JSONObject()
+            val sanitizedTag = "dns-remote-${dns.replace(":", "_").replace(".", "_")}"
+            dnsServer.put("tag", sanitizedTag)
+            dnsServer.put("address", dns)
+            dnsServer.put("detour", "wg-out")
+            serversArray.put(dnsServer)
+        }
         dnsObj.put("servers", serversArray)
         dnsObj.put("strategy", "prefer_ipv4")
         root.put("dns", dnsObj)
 
-        // Inbound: TUN interface with "mixed" stack (official sing-box Android userspace stack)
+        // Inbound: TUN interface with "gvisor" stack (official sing-box Android userspace stack)
         val inboundsArray = JSONArray()
         val tunInbound = JSONObject()
         tunInbound.put("type", "tun")
         tunInbound.put("tag", "tun-in")
         tunInbound.put("interface_name", "vianshield-tun")
         val addresses = JSONArray()
-        addresses.put(profile.address)
-        // v1.11 unified address schema
+        for (addr in profile.addresses) {
+            addresses.put(addr)
+        }
         tunInbound.put("address", addresses)
-        // v1.10 backward compatibility
-        tunInbound.put("inet4_address", addresses)
         tunInbound.put("mtu", profile.mtu)
         tunInbound.put("auto_route", true)
         tunInbound.put("strict_route", true)
-        tunInbound.put("stack", "mixed")
+        tunInbound.put("stack", "gvisor")
         tunInbound.put("sniff", true)
         tunInbound.put("sniff_override_destination", false)
         inboundsArray.put(tunInbound)
         root.put("inbounds", inboundsArray)
 
-        // Outbound: WireGuard
+        // Outbound: WireGuard + DNS + Direct
         val outboundsArray = JSONArray()
         val wgOutbound = JSONObject()
         wgOutbound.put("type", "wireguard")
@@ -258,7 +302,9 @@ object WireGuardConfigParser {
         wgOutbound.put("server", profile.endpointHost)
         wgOutbound.put("server_port", profile.endpointPort)
         val localAddresses = JSONArray()
-        localAddresses.put(profile.address)
+        for (addr in profile.addresses) {
+            localAddresses.put(addr)
+        }
         wgOutbound.put("local_address", localAddresses)
         wgOutbound.put("private_key", profile.privateKey)
         wgOutbound.put("peer_public_key", profile.peerPublicKey)
@@ -266,7 +312,16 @@ object WireGuardConfigParser {
             wgOutbound.put("pre_shared_key", profile.presharedKey)
         }
         wgOutbound.put("mtu", profile.mtu)
+        if (profile.persistentKeepalive != null && profile.persistentKeepalive > 0) {
+            wgOutbound.put("persistent_keepalive_interval", profile.persistentKeepalive)
+        }
         outboundsArray.put(wgOutbound)
+
+        // DNS outbound: hijacks port 53 / DNS queries from tun and passes to dns router
+        val dnsOutbound = JSONObject()
+        dnsOutbound.put("type", "dns")
+        dnsOutbound.put("tag", "dns-out")
+        outboundsArray.put(dnsOutbound)
 
         // Direct outbound fallback
         val directOutbound = JSONObject()
@@ -276,14 +331,26 @@ object WireGuardConfigParser {
 
         root.put("outbounds", outboundsArray)
 
-        // Route section: auto-detect interface to protect outbound sockets & route default traffic
+        // Route section: auto-detect interface to protect outbound sockets & route rules
         val routeObj = JSONObject()
         routeObj.put("auto_detect_interface", true)
         routeObj.put("final", "wg-out")
         val rulesArray = JSONArray()
-        val defaultRule = JSONObject()
-        defaultRule.put("outbound", "wg-out")
-        rulesArray.put(defaultRule)
+
+        // Rule 1: hijack DNS queries and send to dns-out
+        val dnsRule = JSONObject()
+        dnsRule.put("protocol", "dns")
+        dnsRule.put("outbound", "dns-out")
+        rulesArray.put(dnsRule)
+
+        // Rule 2: route all TUN packets to wg-out
+        val tunRule = JSONObject()
+        val tunInbounds = JSONArray()
+        tunInbounds.put("tun-in")
+        tunRule.put("inbound", tunInbounds)
+        tunRule.put("outbound", "wg-out")
+        rulesArray.put(tunRule)
+
         routeObj.put("rules", rulesArray)
         root.put("route", routeObj)
 
@@ -301,7 +368,7 @@ object WireGuardConfigParser {
             PrivateKey = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=
             Address = 172.19.0.2/30
             DNS = 1.1.1.1
-            MTU = 1420
+            MTU = 1280
 
             [Peer]
             # Server Public Key (32 bytes Base64)

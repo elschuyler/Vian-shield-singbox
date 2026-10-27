@@ -274,4 +274,85 @@
 * **Any deviation from what was requested, and why:** None. Pinned sing-box v1.11.0 preserved; no mocks or simulated connection states used.
 * **Any known issue or follow-up needed:** Ready for on-device manual QA testing.
 
+---
+
+### Entry: Phase 1.6 — Verify Critical Fixes, Resolve VPN Recovery & Extend WireGuard Integration
+* **Timestamp:** 2026-10-26 02:00 UTC
+* **One-line summary of what was requested:** Verify critical fixes against pinned sing-box v1.11.0, resolve VPN startup & toggle off-and-on recovery issues, extend WireGuard parser for multi-address/multi-DNS/keepalive, enforce multi-peer rejection without silent discard, and verify test/compilation passes.
+* **Exact files touched:**
+  - `/app/src/main/java/com/example/vpn/VianshieldVpnService.kt`
+  - `/app/src/main/java/com/example/engine/SingBoxAdapter.kt`
+  - `/app/src/main/java/com/example/config/WireGuardConfigParser.kt`
+  - `/app/src/test/java/com/example/config/WireGuardConfigParserTest.kt`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_001.md`
+* **What was actually done:**
+  1. VPN Startup Failure & Recovery:
+     - Discovered root cause of the toggle off-and-on recovery issue: on startup failure in `VianshieldVpnService.handleStartVpn()`, the service called `stopForegroundSafely()` and `releaseTunFd()` but omitted `stopSelf()`. The Android system retained the dead/unstopped VpnService instance; only toggling off destroyed the instance via `handleStopVpn() -> stopSelf()`. Added `stopSelf()` to all error termination paths.
+     - Fixed `onDestroy()` overwriting `VpnState.Error` with `VpnState.Stopped`: guarded state update so diagnostic error details and error codes persist on UI after service termination.
+  2. sing-box v1.11.0 Configuration & DNS Detour:
+     - Corrected TUN inbound `stack` from `"mixed"` to `"gvisor"`: Android non-root VPNs lack direct host OS TCP socket translation for raw userspace TUN descriptors.
+     - Added DNS outbound hijacking: configured `"dns-out"` outbound (`type: "dns"`), added route rule `{"protocol": "dns", "outbound": "dns-out"}`, and configured `dns.servers` to route remote DNS queries with `"detour": "wg-out"`, eliminating DNS resolution blackholes.
+     - Removed redundant deprecated `"inet4_address"` field in favor of unified v1.11 `"address"` array.
+  3. Loop Prevention Return Check:
+     - In `SingBoxAdapter.kt`, updated `autoDetectInterfaceControl` bridge to throw `IllegalStateException` if `callback.autoDetectInterfaceControl(fd)` (calling `VpnService.protect(fd)`) returns `false`, preventing Go runtime from routing over an unprotected socket.
+  4. WireGuard Config Import Hardening:
+     - Extended `WireGuardProfile` with `addresses: List<String>`, `dnsServers: List<String>`, and `persistentKeepalive: Int?`.
+     - Updated parser to handle comma-separated IPv4 and IPv6 addresses (e.g., `10.0.0.2/24, fd00::2/64`), normalizing CIDR masks (`/32` for IPv4, `/128` for IPv6).
+     - Updated parser to handle multiple DNS servers (`1.1.1.1, 8.8.8.8`).
+     - Added `PersistentKeepalive` parsing and mapped to `"persistent_keepalive_interval"` in sing-box outbound.
+     - Enforced rejection of multi-peer `.conf` files (`"Multiple [Peer] sections are not supported in single-tunnel mode"`) to prevent silent discarding of peers.
+     - Enforced rejection of unsupported sections (e.g. unknown headers).
+     - Updated `openTun` in `VianshieldVpnService` to add all addresses (IPv4 & IPv6 with default routes `0.0.0.0/0` and `::/0`) and all DNS servers to the Android `VpnService.Builder`.
+  5. Verification & Unit Tests:
+     - Updated existing unit test `toSingBoxJson_producesVerifiedSchema` for `gvisor`, `dns-out`, and `detour: wg-out`.
+     - Added 4 new unit tests in `WireGuardConfigParserTest.kt`: `parse_multiAddress_ipv4AndIpv6_succeeds`, `parse_persistentKeepalive_succeedsAndIncludedInJson`, `parse_multiplePeers_failsWithClearError`, and `parse_unsupportedSection_failsWithClearError`.
+* **How it was verified:**
+  - Local build only: `compile_applet` executed and succeeded with 0 errors.
+  - Gradle unit tests: `:app:testDebugUnitTest` executed and all 32 tests passed (BUILD SUCCESSFUL in 31s).
+  - Workspace security scan: clean (zero unignored keystores or secrets).
+  - Physical on-device execution: pending (requires installation on Android physical hardware).
+* **Any deviation from what was requested, and why:** None. Pinned sing-box v1.11.0 preserved; no mocks or simulated connection states used.
+* **Any known issue or follow-up needed:** Ready for physical device testing with compiled `libbox.aar`.
+
+---
+
+### Entry: Phase 1.7 — BitProxy Reference Audit & Verified VPN Reliability
+* **Timestamp:** 2026-10-27 10:55 UTC
+* **One-line summary of what was requested:** Audit BitProxy reference patches and sing-box v1.14.3 vs v1.11.0 differences, harden Vianshield VPN startup lifecycle, MTU 1280 mobile-safe handling, resource teardown order, and watchdog timeout.
+* **Exact files touched:**
+  - `/app/src/main/java/com/example/vpn/VianshieldVpnService.kt`
+  - `/app/src/main/java/com/example/config/WireGuardConfigParser.kt`
+  - `/app/src/test/java/com/example/config/WireGuardConfigParserTest.kt`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_001.md`
+* **What was actually done:**
+  1. BitProxy Reference Audit:
+     - Audited BitProxy reference architecture (patches 0004, 0007, 0008, 0011, 0034, 0040, 0041, 0043, 0044, 0045, 0046, and sing-tun 0001) against Vianshield's pinned sing-box v1.11.0.
+  2. Startup & Retry Lifecycle Hardening:
+     - Implemented coroutine `Mutex` (`lifecycleMutex`) and active job cancellation (`currentStartJob?.cancel()`) in `VianshieldVpnService` to serialize all start and stop requests, preventing race conditions during rapid retries.
+     - Replaced unconditional `stopSelf()` on startup failures with `stopSelfResult(startId)`. If a newer start intent arrived while an older attempt failed, Android preserves the service rather than killing the new connection attempt.
+     - Added 10-second watchdog timeout (`withTimeoutOrNull(10_000L)`) on `singBoxEngine.start()` to prevent indefinite UI hangs if the native Go runtime deadlocks (addressing BitProxy patch 0034).
+  3. TUN Stack Verification:
+     - Verified that `stack: "gvisor"` is the correct, verified solution for unpatched upstream sing-box v1.11.0. BitProxy only reverted to the system stack after introducing a custom Go patch to `sing-tun` (`sing-tun/0001-system-stack-listen-again...`); without that patch, system stack breaks when Android destroys the TCP listener socket during doze or network shifts.
+  4. Mobile-Safe MTU 1280 Default & Clamping:
+     - Defaulted profile and TUN MTU to 1280 (BitProxy patches 0045/0046, RFC 8200 minimum IPv6 MTU), eliminating silent packet loss, PMTU blackholes, and TLS ClientHello stalls on mobile cellular networks.
+     - Clamped parsed MTUs between `MIN_MTU = 1280` and `MAX_MTU = 1420`.
+  5. Teardown Order & File Descriptor Safety:
+     - Inverted teardown order in `onDestroy()` to call `singBoxEngine.stop()` FIRST so the native BoxService releases the TUN descriptor, then clean up Android-side references.
+     - Added `tunFdTransferredToEngine` guard in `releaseTunFd()` to prevent calling `ParcelFileDescriptor.adoptFd().close()` on descriptors already closed by the Go runtime, eliminating OS descriptor recycling crashes.
+  6. Verification & Regression Tests:
+     - Added 4 MTU regression tests to `WireGuardConfigParserTest.kt`: `parse_omittedMtu_defaultsTo1280`, `parse_oversizedMtu_clampedTo1420`, `parse_undersizedMtu_clampedTo1280`, and `parse_validCustomMtu_preserved`.
+     - Ran `:app:testDebugUnitTest`: all 36 unit tests passed (BUILD SUCCESSFUL in 37s).
+     - Ran `compile_applet`: clean compilation with 0 errors.
+* **How it was verified:**
+  - Local build only: `compile_applet` executed and succeeded with 0 errors.
+  - Gradle unit tests: `:app:testDebugUnitTest` executed and all 36 tests passed (BUILD SUCCESSFUL in 37s).
+  - Workspace security scan: clean (zero unignored keystores or secrets).
+  - Physical on-device execution: pending (requires installation on Android physical hardware).
+* **Any deviation from what was requested, and why:** None. Pinned sing-box v1.11.0 preserved; no mocks or simulated connection states used.
+* **Any known issue or follow-up needed:** Ready for physical device testing with compiled `libbox.aar`.
+
+
+
 

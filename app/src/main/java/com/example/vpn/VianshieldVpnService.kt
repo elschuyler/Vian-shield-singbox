@@ -20,12 +20,16 @@ import com.example.logging.LogCategory
 import com.example.logging.OperationalLogCatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
 
@@ -55,9 +59,12 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private val lifecycleMutex = Mutex()
+    private var currentStartJob: Job? = null
     private val singBoxEngine = SingBoxAdapter()
     private var activeProfile: WireGuardProfile? = null
     private var activeTunFd: Int = -1
+    private var tunFdTransferredToEngine = false
 
     override fun onCreate() {
         super.onCreate()
@@ -76,109 +83,119 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
             ACTION_START_VPN -> {
                 val configStr = intent.getStringExtra(EXTRA_CONFIG_STRING)
                     ?: WireGuardConfigParser.createDefaultTestConfig()
-                handleStartVpn(configStr)
+                handleStartVpn(configStr, startId)
             }
             ACTION_STOP_VPN -> {
-                handleStopVpn()
+                handleStopVpn(startId)
             }
         }
 
         return START_NOT_STICKY
     }
 
-    private fun handleStartVpn(rawConfig: String) {
-        if (_vpnState.value is VpnState.Connected || _vpnState.value is VpnState.Starting) {
+    private fun handleStartVpn(rawConfig: String, startId: Int) {
+        if (_vpnState.value is VpnState.Connected) {
             OperationalLogCatcher.warn(
                 LogCategory.VPN_LIFECYCLE,
                 "VpnService",
-                "Start requested while VPN is already starting/connected (duplicate start suppressed)"
+                "Start requested while VPN is already connected (duplicate start suppressed)"
             )
             return
         }
 
-        _vpnState.value = VpnState.Starting("STAGE 1: Validating WireGuard profile")
-        OperationalLogCatcher.info(
-            LogCategory.VPN_LIFECYCLE,
-            "VpnService",
-            "STAGE 1: Initiating VPN start sequence"
-        )
+        currentStartJob?.cancel()
+        currentStartJob = serviceScope.launch {
+            lifecycleMutex.withLock {
+                _vpnState.value = VpnState.Starting("STAGE 1: Validating WireGuard profile")
+                OperationalLogCatcher.info(
+                    LogCategory.VPN_LIFECYCLE,
+                    "VpnService",
+                    "STAGE 1: Initiating serialized VPN start sequence (startId=$startId)"
+                )
 
-        serviceScope.launch {
-            // 1. Parse and validate WireGuard configuration
-            val parseResult = WireGuardConfigParser.parse(rawConfig)
-            if (parseResult.isFailure) {
-                val err = parseResult.exceptionOrNull()?.message ?: "Configuration parse failed"
-                OperationalLogCatcher.error(LogCategory.CONFIG_VALIDATION, "VpnService", "STAGE 1 FAILED: $err")
-                _vpnState.value = VpnState.Error("ERR_CONFIG_INVALID", err)
-                stopForegroundSafely()
-                return@launch
+                // 1. Parse and validate WireGuard configuration
+                val parseResult = WireGuardConfigParser.parse(rawConfig)
+                if (parseResult.isFailure) {
+                    val err = parseResult.exceptionOrNull()?.message ?: "Configuration parse failed"
+                    OperationalLogCatcher.error(LogCategory.CONFIG_VALIDATION, "VpnService", "STAGE 1 FAILED: $err")
+                    _vpnState.value = VpnState.Error("ERR_CONFIG_INVALID", err)
+                    stopForegroundSafely()
+                    stopSelfResult(startId)
+                    return@withLock
+                }
+
+                val profile = parseResult.getOrThrow()
+                activeProfile = profile
+
+                // 2. Transform to sing-box v1.11 JSON
+                _vpnState.value = VpnState.Starting("STAGE 2: Generating sing-box configuration")
+                val singBoxJson = WireGuardConfigParser.toSingBoxJson(profile)
+                OperationalLogCatcher.info(
+                    LogCategory.CONFIG_VALIDATION,
+                    "VpnService",
+                    "STAGE 2: Generated sing-box configuration (gvisor stack, MTU=${profile.mtu}, route auto_detect=true, addresses=${profile.addresses.joinToString(",")})"
+                )
+
+                // 3. Verify native binary availability before claiming connection
+                if (!singBoxEngine.isNativeBinaryAvailable()) {
+                    val missingMsg = "sing-box native engine (libbox.aar) has not been compiled yet. Run the GitHub Actions workflow (.github/workflows/build-vianshield.yml) to generate libbox.aar."
+                    OperationalLogCatcher.error(LogCategory.ENGINE_INIT, "VpnService", "STAGE 2 FAILED: $missingMsg")
+                    _vpnState.value = VpnState.Error("ERR_NATIVE_AAR_PENDING", missingMsg)
+                    stopForegroundSafely()
+                    stopSelfResult(startId)
+                    return@withLock
+                }
+
+                // 4. Start foreground notification
+                startForeground(NOTIFICATION_ID, buildNotification("Starting Vianshield Tunnel…"))
+
+                // 5. Initialize engine adapter
+                _vpnState.value = VpnState.Starting("STAGE 3: Initializing native BoxService core")
+                val initResult = singBoxEngine.initialize(singBoxJson, this@VianshieldVpnService)
+                if (initResult.isFailure) {
+                    val err = initResult.exceptionOrNull()?.message ?: "Engine initialization failed"
+                    OperationalLogCatcher.error(LogCategory.ENGINE_INIT, "VpnService", "STAGE 3 FAILED: $err")
+                    _vpnState.value = VpnState.Error("ERR_ENGINE_INIT", err)
+                    stopForegroundSafely()
+                    stopSelfResult(startId)
+                    return@withLock
+                }
+
+                // 6. Start sing-box engine with watchdog timeout (prevents hanging on deadlocks - BitProxy patch 0034)
+                _vpnState.value = VpnState.Starting("STAGE 4: Starting sing-box routing core")
+                val engineStartResult = withTimeoutOrNull(10_000L) {
+                    singBoxEngine.start()
+                } ?: Result.failure(IllegalStateException("sing-box BoxService start timed out after 10 seconds"))
+
+                if (engineStartResult.isFailure) {
+                    val err = engineStartResult.exceptionOrNull()?.message ?: "Engine start failed"
+                    OperationalLogCatcher.error(LogCategory.ENGINE_INIT, "VpnService", "STAGE 4 FAILED: $err")
+                    _vpnState.value = VpnState.Error("ERR_ENGINE_START", err)
+                    singBoxEngine.stop()
+                    releaseTunFd()
+                    stopForegroundSafely()
+                    stopSelfResult(startId)
+                    return@withLock
+                }
+
+                // 7. Transition to Connected ONLY after engine and TUN are verified running
+                _vpnState.value = VpnState.Connected(
+                    endpoint = "${profile.endpointHost}:${profile.endpointPort}",
+                    localAddress = profile.address,
+                    mtu = profile.mtu
+                )
+
+                updateNotification("Connected to ${profile.endpointHost}:${profile.endpointPort}")
+                OperationalLogCatcher.info(
+                    LogCategory.VPN_LIFECYCLE,
+                    "VpnService",
+                    "STAGE 5: VPN tunnel and sing-box engine successfully running"
+                )
             }
-
-            val profile = parseResult.getOrThrow()
-            activeProfile = profile
-
-            // 2. Transform to sing-box v1.11 JSON
-            _vpnState.value = VpnState.Starting("STAGE 2: Generating sing-box configuration")
-            val singBoxJson = WireGuardConfigParser.toSingBoxJson(profile)
-            OperationalLogCatcher.info(
-                LogCategory.CONFIG_VALIDATION,
-                "VpnService",
-                "STAGE 2: Generated sing-box configuration (mixed stack, route auto_detect=true, address=${profile.address})"
-            )
-
-            // 3. Verify native binary availability before claiming connection
-            if (!singBoxEngine.isNativeBinaryAvailable()) {
-                val missingMsg = "sing-box native engine (libbox.aar) has not been compiled yet. Run the GitHub Actions workflow (.github/workflows/build-vianshield.yml) to generate libbox.aar."
-                OperationalLogCatcher.error(LogCategory.ENGINE_INIT, "VpnService", "STAGE 2 FAILED: $missingMsg")
-                _vpnState.value = VpnState.Error("ERR_NATIVE_AAR_PENDING", missingMsg)
-                stopForegroundSafely()
-                return@launch
-            }
-
-            // 4. Start foreground notification
-            startForeground(NOTIFICATION_ID, buildNotification("Starting Vianshield Tunnel…"))
-
-            // 5. Initialize engine adapter
-            _vpnState.value = VpnState.Starting("STAGE 3: Initializing native BoxService core")
-            val initResult = singBoxEngine.initialize(singBoxJson, this@VianshieldVpnService)
-            if (initResult.isFailure) {
-                val err = initResult.exceptionOrNull()?.message ?: "Engine initialization failed"
-                OperationalLogCatcher.error(LogCategory.ENGINE_INIT, "VpnService", "STAGE 3 FAILED: $err")
-                _vpnState.value = VpnState.Error("ERR_ENGINE_INIT", err)
-                stopForegroundSafely()
-                return@launch
-            }
-
-            // 6. Start sing-box engine (engine calls openTun callback during startup)
-            _vpnState.value = VpnState.Starting("STAGE 4: Starting sing-box routing core")
-            val engineStartResult = singBoxEngine.start()
-            if (engineStartResult.isFailure) {
-                val err = engineStartResult.exceptionOrNull()?.message ?: "Engine start failed"
-                OperationalLogCatcher.error(LogCategory.ENGINE_INIT, "VpnService", "STAGE 4 FAILED: $err")
-                _vpnState.value = VpnState.Error("ERR_ENGINE_START", err)
-                singBoxEngine.stop()
-                releaseTunFd()
-                stopForegroundSafely()
-                return@launch
-            }
-
-            // 7. Transition to Connected ONLY after engine and TUN are verified running
-            _vpnState.value = VpnState.Connected(
-                endpoint = "${profile.endpointHost}:${profile.endpointPort}",
-                localAddress = profile.address,
-                mtu = profile.mtu
-            )
-
-            updateNotification("Connected to ${profile.endpointHost}:${profile.endpointPort}")
-            OperationalLogCatcher.info(
-                LogCategory.VPN_LIFECYCLE,
-                "VpnService",
-                "STAGE 5: VPN tunnel and sing-box engine successfully running"
-            )
         }
     }
 
-    private fun handleStopVpn() {
+    private fun handleStopVpn(startId: Int? = null) {
         if (_vpnState.value is VpnState.Stopped || _vpnState.value is VpnState.Stopping) {
             return
         }
@@ -190,17 +207,25 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
             "Stopping VPN service and releasing resources"
         )
 
+        currentStartJob?.cancel()
         serviceScope.launch {
-            singBoxEngine.stop()
-            releaseTunFd()
-            stopForegroundSafely()
-            _vpnState.value = VpnState.Stopped
-            OperationalLogCatcher.info(
-                LogCategory.VPN_LIFECYCLE,
-                "VpnService",
-                "VPN service stopped cleanly"
-            )
-            stopSelf()
+            lifecycleMutex.withLock {
+                // Teardown order: stop engine first so it releases TUN fd cleanly
+                singBoxEngine.stop()
+                releaseTunFd()
+                stopForegroundSafely()
+                _vpnState.value = VpnState.Stopped
+                OperationalLogCatcher.info(
+                    LogCategory.VPN_LIFECYCLE,
+                    "VpnService",
+                    "VPN service stopped cleanly"
+                )
+                if (startId != null) {
+                    stopSelfResult(startId)
+                } else {
+                    stopSelf()
+                }
+            }
         }
     }
 
@@ -224,12 +249,23 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
                 .setSession("Vianshield VPN")
                 .setMtu(profile.mtu)
 
-            val addressParts = profile.address.split("/")
-            val ip = addressParts[0]
-            val prefix = if (addressParts.size > 1) addressParts[1].toIntOrNull() ?: 32 else 32
-            builder.addAddress(ip, prefix)
-            builder.addRoute("0.0.0.0", 0)
-            builder.addDnsServer(profile.dns)
+            for (addr in profile.addresses) {
+                val addressParts = addr.split("/")
+                val ip = addressParts[0]
+                val isIpv6 = ip.contains(":")
+                val defaultPrefix = if (isIpv6) 128 else 32
+                val prefix = if (addressParts.size > 1) addressParts[1].toIntOrNull() ?: defaultPrefix else defaultPrefix
+                builder.addAddress(ip, prefix)
+                if (isIpv6) {
+                    builder.addRoute("::", 0)
+                } else {
+                    builder.addRoute("0.0.0.0", 0)
+                }
+            }
+
+            for (dns in profile.dnsServers) {
+                builder.addDnsServer(dns)
+            }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 builder.setMetered(false)
@@ -244,11 +280,12 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
             // Detach descriptor to transfer exclusive ownership to Go / sing-box runtime
             val rawFd = pfd.detachFd()
             activeTunFd = rawFd
+            tunFdTransferredToEngine = true
 
             OperationalLogCatcher.info(
                 LogCategory.TUN_INTERFACE,
                 "VpnService",
-                "STAGE 4B: TUN interface established and detached: fd=$rawFd, address=$ip/$prefix, mtu=${profile.mtu}"
+                "STAGE 4B: TUN interface established and detached: fd=$rawFd, addresses=${profile.addresses.joinToString(",")}, dns=${profile.dnsServers.joinToString(",")}, mtu=${profile.mtu}"
             )
             rawFd
         } catch (e: Exception) {
@@ -296,13 +333,17 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
     private fun releaseTunFd() {
         if (activeTunFd >= 0) {
             val fdToClose = activeTunFd
+            val wasTransferred = tunFdTransferredToEngine
             activeTunFd = -1
-            try {
-                // When detached, Go closes the file descriptor upon BoxService.close().
-                // If Go did not close it, we close the descriptor safely.
-                ParcelFileDescriptor.adoptFd(fdToClose).close()
-                OperationalLogCatcher.info(LogCategory.TUN_INTERFACE, "VpnService", "Active TUN descriptor closed: fd=$fdToClose")
-            } catch (_: Exception) {}
+            tunFdTransferredToEngine = false
+            if (!wasTransferred) {
+                try {
+                    ParcelFileDescriptor.adoptFd(fdToClose).close()
+                    OperationalLogCatcher.info(LogCategory.TUN_INTERFACE, "VpnService", "Active TUN descriptor closed by Android: fd=$fdToClose")
+                } catch (_: Exception) {}
+            } else {
+                OperationalLogCatcher.info(LogCategory.TUN_INTERFACE, "VpnService", "Active TUN descriptor released to sing-box Go core: fd=$fdToClose")
+            }
         }
     }
 
@@ -364,9 +405,11 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
 
     override fun onDestroy() {
         serviceScope.cancel()
-        releaseTunFd()
         singBoxEngine.stop()
-        _vpnState.value = VpnState.Stopped
+        releaseTunFd()
+        if (_vpnState.value !is VpnState.Error) {
+            _vpnState.value = VpnState.Stopped
+        }
         OperationalLogCatcher.info(
             LogCategory.VPN_LIFECYCLE,
             "VpnService",
