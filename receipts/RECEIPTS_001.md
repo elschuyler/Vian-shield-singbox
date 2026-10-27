@@ -381,6 +381,38 @@
 * **Any deviation from what was requested, and why:** None. Only the CI pipeline and audit ledger files were touched; no VPN engine or application runtime code was modified.
 * **Any known issue or follow-up needed:** Ready for GitHub Actions workflow trigger on push/dispatch.
 
+---
+
+### Entry: Fix GitHub Actions APK Verification & Staging Isolation
+* **Timestamp:** 2026-10-27 19:15 UTC
+* **One-line summary of what was requested:** Fix the remaining GitHub Actions APK verification failure in `.github/workflows/build-vianshield.yml` by staging APKs outside the Gradle-managed output directory into `dist/`, verifying with `test -s`, uploading from `dist/`, and adding failure diagnostics.
+* **Exact files touched:**
+  - `/.github/workflows/build-vianshield.yml`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_001.md`
+* **What was actually done:**
+  1. Root cause analysis of verification step exit code 1:
+     - The workflow built the ARM64 APK and copied it as `app/build/outputs/apk/debug/vianshield-arm64-v8a-debug.apk` inside the Gradle-managed build directory.
+     - When the subsequent `gradle :app:assembleDebug` task ran to build the universal APK, the Android Gradle Plugin (AGP) package task cleaned and reconciled `app/build/outputs/apk/debug/`, removing unmanaged/stray files. This wiped `vianshield-arm64-v8a-debug.apk`.
+     - The final `test -f app/build/outputs/apk/debug/vianshield-arm64-v8a-debug.apk` subsequently failed with exit code 1.
+  2. Isolated staging in `dist/`:
+     - Updated workflow to stage the ARM64 APK immediately after its build to `dist/vianshield-arm64-v8a-debug.apk`.
+     - Built the universal APK and staged it to `dist/vianshield-universal-debug.apk`.
+  3. Non-empty file size verification (`test -s`):
+     - Updated verification step to test both `dist/vianshield-arm64-v8a-debug.apk` and `dist/vianshield-universal-debug.apk` with `test -s` to guarantee files exist and are non-empty.
+  4. Diagnostic fallback & Artifact upload:
+     - Added conditional failure diagnostics (`ls -laR app/build/outputs/`) if any step fails.
+     - Configured artifact upload step to upload from `dist/*.apk`.
+  5. Preserved all existing engine version, ABI target configuration, WireGuard logic, and application runtime code.
+* **How it was verified:**
+  - Local build only: `compile_applet` executed and succeeded with 0 errors.
+  - Gradle unit tests: `:app:testDebugUnitTest` executed and all 36 tests passed.
+  - Workspace security scan: clean (zero unignored keystores or secrets).
+  - Workflow syntax and YAML structure verified.
+  - Remote verification: pending next GitHub Actions run on push/dispatch.
+* **Any deviation from what was requested, and why:** None.
+* **Any known issue or follow-up needed:** Awaiting remote GitHub Actions workflow run execution.
+
 
 
 

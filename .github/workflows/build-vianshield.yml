@@ -120,24 +120,44 @@ jobs:
 
       - name: Build ARM64 Optimized Debug APK (~30 MB)
         run: |
+          mkdir -p dist
           gradle :app:assembleDebug -PtargetAbi=arm64-v8a --stacktrace
-          cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/vianshield-arm64-v8a-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/vianshield-arm64-v8a-debug.apk
 
       - name: Build Universal Debug APK (~128 MB)
         run: |
+          mkdir -p dist
           gradle :app:assembleDebug --stacktrace
-          cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/vianshield-universal-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/vianshield-universal-debug.apk
 
-      - name: Verify Debug APKs exist
+      - name: Verify Staged Debug APKs
         run: |
-          test -f app/build/outputs/apk/debug/app-debug.apk
-          test -f app/build/outputs/apk/debug/vianshield-arm64-v8a-debug.apk
-          ls -lh app/build/outputs/apk/debug/*.apk
+          echo "=== Verifying staged APKs in dist/ ==="
+          if [ ! -s dist/vianshield-arm64-v8a-debug.apk ]; then
+            echo "::error::dist/vianshield-arm64-v8a-debug.apk does not exist or is empty!"
+            echo "=== Listing Gradle APK output directory ==="
+            ls -la app/build/outputs/apk/debug/ || echo "Directory app/build/outputs/apk/debug/ does not exist"
+            exit 1
+          fi
+          if [ ! -s dist/vianshield-universal-debug.apk ]; then
+            echo "::error::dist/vianshield-universal-debug.apk does not exist or is empty!"
+            echo "=== Listing Gradle APK output directory ==="
+            ls -la app/build/outputs/apk/debug/ || echo "Directory app/build/outputs/apk/debug/ does not exist"
+            exit 1
+          fi
+          echo "=== Both staged APKs verified successfully ==="
+          ls -lh dist/*.apk
+
+      - name: Diagnostic listing on failure
+        if: failure()
+        run: |
+          echo "=== Diagnostic listing of Gradle build outputs ==="
+          ls -laR app/build/outputs/ || true
 
       - name: Upload Debug APK Artifacts
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: vianshield-debug-apks
-          path: app/build/outputs/apk/debug/*.apk
+          path: dist/*.apk
           retention-days: 14
