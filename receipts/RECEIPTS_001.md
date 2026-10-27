@@ -353,6 +353,34 @@
 * **Any deviation from what was requested, and why:** None. Pinned sing-box v1.11.0 preserved; no mocks or simulated connection states used.
 * **Any known issue or follow-up needed:** Ready for physical device testing with compiled `libbox.aar`.
 
+---
+
+### Entry: Fix Native libbox.aar CI Failure (NDK Resolution & GOFLAGS Remediation)
+* **Timestamp:** 2026-10-27 18:15 UTC
+* **One-line summary of what was requested:** Investigate and fix the failing GitHub Actions pipeline (`.github/workflows/build-vianshield.yml`) where gomobile v0.1.4 panics at `init.go:311` during `build_libbox` with NDK 30 override.
+* **Exact files touched:**
+  - `/.github/workflows/build-vianshield.yml`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_001.md`
+* **What was actually done:**
+  1. Root cause analysis of `panic: exit status 1` at `cmd/gomobile/init.go:311`:
+     - Identified that gomobile's `goEnv()` runs `exec.Command("go", "env", name).Output()`.
+     - When `GOFLAGS="-ldflags=-s -w"` was exported in the step environment, child processes inherited it. Because `go env` does not accept `-ldflags`, the command exited with status 1 (`go env: unknown flag -ldflags`), causing gomobile to panic.
+     - Removed breaking `GOFLAGS="-ldflags=-s -w"` from `go run ./cmd/internal/build_libbox -target android`. Upstream sing-box's `build_libbox` tool already embeds `-s -w` flags when invoking `gomobile bind` internally.
+  2. Root cause analysis of NDK 30 override:
+     - In `.github/workflows/build-vianshield.yml`, line 47 explicitly ran `echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> $GITHUB_ENV`.
+     - In GitHub Actions Ubuntu runner environments, `$ANDROID_NDK_LATEST_HOME` points to the pre-installed canary/preview NDK 30 (`30.0.16248370`), overriding the requested NDK r26d (`26.3.11579264`) from `nttld/setup-ndk@v1`.
+     - Updated workflow to capture `${{ steps.setup-ndk.outputs.ndk-path }}` with runner SDK fallback, cleanly setting `ANDROID_NDK_HOME` and `ANDROID_NDK_ROOT` to r26d and adding the LLVM toolchain bin to `$GITHUB_PATH`.
+  3. CI Toolchain Verification:
+     - Added a dedicated diagnostic step (`Verify NDK & Go Toolchain`) logging Go version, exact NDK paths, and testing `clang --version` to ensure immediate visibility into toolchain paths and execution states on CI runs.
+* **How it was verified:**
+  - Local build only: `compile_applet` executed and succeeded with 0 errors.
+  - Gradle unit tests: `:app:testDebugUnitTest` executed and all 36 tests passed cleanly.
+  - Workspace security scan: clean (zero unignored keystores or secrets).
+  - CI execution: workflow YAML syntax and step configuration verified.
+* **Any deviation from what was requested, and why:** None. Only the CI pipeline and audit ledger files were touched; no VPN engine or application runtime code was modified.
+* **Any known issue or follow-up needed:** Ready for GitHub Actions workflow trigger on push/dispatch.
+
 
 
 
