@@ -7,59 +7,57 @@ import java.io.File
 
 /**
  * SingBoxStorageManager:
- * Manages app-private internal storage for sing-box v1.11.0 runtime files.
+ * Manages sandbox environment directories (baseDir, workingDir, tempDir)
+ * for sing-box v1.14.4 according to official sing-box-for-android (SFA) patterns.
  *
- * Background:
- * On Android, the execution environment CWD is typically "/" (read-only rootfs).
- * If sing-box does not receive an explicit absolute path for its cache file,
- * it defaults to "cache.db", resulting in:
- * "initialize cache-file: open cache.db: read-only file system".
- *
- * This manager:
- * - Allocates a dedicated directory in internal app storage (context.filesDir/singbox).
- * - Prepares and validates directory write permissions before engine startup.
- * - Protects against zero-length corrupt databases caused by interrupted writes.
- * - Confines all cache mutations strictly to singbox/cache.db (zero impact on unrelated app data).
- * - Provides non-sensitive diagnostic reporting.
+ * In sing-box v1.14.4, directory paths are passed to the engine via Libbox.setup(),
+ * eliminating the need for the experimental.cache_file JSON configuration workaround.
  */
 object SingBoxStorageManager {
     private const val SINGBOX_DIR_NAME = "singbox"
     private const val CACHE_DB_FILE_NAME = "cache.db"
 
-    /**
-     * Resolves the dedicated app-private directory for sing-box runtime data.
-     * Guaranteed to be inside internal app storage (/data/user/0/.../files/singbox)
-     * which does not require external storage permissions and survives app updates.
-     */
+    fun getBaseDir(context: Context): File {
+        val dir = File(context.filesDir, SINGBOX_DIR_NAME)
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    fun getWorkingDir(context: Context): File {
+        return context.getExternalFilesDir(null) ?: getBaseDir(context)
+    }
+
+    fun getTempDir(context: Context): File {
+        val temp = File(context.cacheDir, "singbox_temp")
+        if (!temp.exists()) temp.mkdirs()
+        return temp
+    }
+
     fun getCacheDir(context: Context): File {
-        return File(context.filesDir, SINGBOX_DIR_NAME)
+        return getBaseDir(context)
     }
 
-    /**
-     * Resolves the absolute file handle for sing-box's persistent cache.db.
-     */
     fun getCacheDbFile(context: Context): File {
-        return File(getCacheDir(context), CACHE_DB_FILE_NAME)
+        return File(getBaseDir(context), CACHE_DB_FILE_NAME)
     }
 
     /**
-     * Prepares and verifies the app-private cache storage before engine startup.
-     * - Creates the parent directory if missing.
-     * - Verifies write permissions on the directory.
-     * - Checks for zero-length / corrupt cache files from interrupted writes and safely removes them.
-     * - Returns a Result containing the absolute path if safely usable, or failure if storage is unwritable.
+     * Bootstraps and registers sandbox paths with the SingBoxEngine instance.
+     */
+    fun setupEnvironment(context: Context, engine: SingBoxEngine): Result<Unit> {
+        val baseDir = getBaseDir(context)
+        val workingDir = getWorkingDir(context)
+        val tempDir = getTempDir(context)
+        return engine.setupEnvironment(baseDir, workingDir, tempDir)
+    }
+
+    /**
+     * Backward-compatible storage preparation helper.
      */
     fun prepareCacheStorage(context: Context): Result<String> {
         return try {
-            val cacheDir = getCacheDir(context)
-            if (!cacheDir.exists()) {
-                val created = cacheDir.mkdirs()
-                if (!created && !cacheDir.exists()) {
-                    val err = "Failed to create sing-box storage directory: ${cacheDir.absolutePath}"
-                    OperationalLogCatcher.warn(LogCategory.ENGINE_INIT, "StorageManager", err)
-                    return Result.failure(IllegalStateException(err))
-                }
-            }
+            val cacheDir = getBaseDir(context)
+            if (!cacheDir.exists()) cacheDir.mkdirs()
 
             if (!cacheDir.canWrite()) {
                 val err = "Sing-box cache directory is not writable: ${cacheDir.absolutePath}"
@@ -69,9 +67,6 @@ object SingBoxStorageManager {
 
             val cacheFile = getCacheDbFile(context)
             if (cacheFile.exists()) {
-                // If the file exists but has 0 bytes (e.g. truncated from crash/OOM during creation),
-                // bbolt cannot open it and crashes with unexpected EOF or invalid header.
-                // Safely delete the empty/corrupt file so sing-box initializes a fresh DB.
                 if (cacheFile.length() == 0L) {
                     OperationalLogCatcher.warn(
                         LogCategory.ENGINE_INIT,
@@ -89,7 +84,7 @@ object SingBoxStorageManager {
             OperationalLogCatcher.info(
                 LogCategory.ENGINE_INIT,
                 "StorageManager",
-                "Sing-box app-private cache storage ready at: ${cacheFile.absolutePath} (exists=${cacheFile.exists()}, size=${cacheFile.length()}B)"
+                "Sing-box sandbox directories initialized (base=${cacheDir.absolutePath})"
             )
             Result.success(cacheFile.absolutePath)
         } catch (e: Exception) {
@@ -100,8 +95,7 @@ object SingBoxStorageManager {
     }
 
     /**
-     * Safely resets/clears the sing-box cache file (e.g., on corruption recovery).
-     * Strictly touches ONLY singbox/cache.db without deleting any unrelated app files.
+     * Safely resets/clears transient sing-box runtime data.
      */
     fun clearCacheFile(context: Context): Boolean {
         return try {
@@ -128,18 +122,22 @@ object SingBoxStorageManager {
     }
 
     /**
-     * Safe non-sensitive diagnostic summary of the cache storage state.
+     * Safe non-sensitive diagnostic summary of the sandbox storage paths.
      */
     fun getSafeCacheDiagnostics(context: Context): Map<String, String> {
-        val dir = getCacheDir(context)
-        val file = getCacheDbFile(context)
-        val isWritable = if (dir.exists()) dir.canWrite() else context.filesDir.canWrite()
+        val baseDir = getBaseDir(context)
+        val workingDir = getWorkingDir(context)
+        val tempDir = getTempDir(context)
+        val cacheFile = getCacheDbFile(context)
+        val isWritable = baseDir.canWrite()
+
         return linkedMapOf(
-            "Cache Path" to file.absolutePath,
-            "Directory Exists" to dir.exists().toString(),
+            "Base Dir" to baseDir.absolutePath,
+            "Working Dir" to workingDir.absolutePath,
+            "Temp Dir" to tempDir.absolutePath,
+            "Cache Path" to cacheFile.absolutePath,
+            "Directory Exists" to baseDir.exists().toString(),
             "Directory Writable" to isWritable.toString(),
-            "File Exists" to file.exists().toString(),
-            "File Size" to if (file.exists()) "${file.length()} bytes" else "0 bytes",
             "Storage Status" to if (isWritable) "Writable App-Private Internal Storage" else "Read-Only / Unwritable"
         )
     }

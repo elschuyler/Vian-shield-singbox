@@ -89,3 +89,63 @@
   - On-device claim only: not tested (physical hardware testing required).
 * **Any deviation from what was requested, and why:** None. Native networking, sing-box engine, config parsing, storage manager, VPN lifecycle, Gradle configs, and CI workflows were completely untouched.
 * **Any known issue or follow-up needed:** Ready for on-device manual QA testing.
+
+---
+
+### Entry: Phase 1.11 — BitProxy-Based Engine Integration, Stable sing-box Upgrade, Single APK
+* **Timestamp:** 2026-10-28 22:25 UTC
+* **One-line summary of what was requested:** Rework sing-box integration using BitProxy & sing-box-for-android (SFA) reference patterns, upgrade engine to stable sing-box v1.14.4, eliminate experimental cache-file workaround, preserve 4-tab UI & honest placeholders, consolidate CI into a single-job dual-ARM APK workflow, and verify all unit tests and builds.
+* **Exact files touched:**
+  - `/.github/workflows/build-vianshield.yml`
+  - `/app/src/main/java/com/example/engine/SingBoxEngine.kt`
+  - `/app/src/main/java/com/example/engine/SingBoxAdapter.kt`
+  - `/app/src/main/java/com/example/engine/SingBoxStorageManager.kt`
+  - `/app/src/main/java/com/example/config/WireGuardConfigParser.kt`
+  - `/app/src/main/java/com/example/vpn/VianshieldVpnService.kt`
+  - `/app/src/main/java/com/example/ui/DiagnosticsScreen.kt`
+  - `/app/src/main/java/com/example/ui/SettingsScreen.kt`
+  - `/app/src/test/java/com/example/config/WireGuardConfigParserTest.kt`
+  - `/app/src/test/java/com/example/VianshieldPhase1Test.kt`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_002.md`
+* **What was actually done:**
+  1. Upstream Pinning & Toolchain Alignment (Phase A):
+     - Pinned sing-box Git tag/release to stable `v1.14.4` (strictly avoiding `v1.15.0-alpha` prerelease).
+     - Pinned official matching `sing-box-for-android` (SFA) commit SHA to `f87c2eb` (v1.14.4 release cycle).
+     - Pinned Go compiler to `1.24`, Android NDK to `r26d` (`26.3.11579264`), and JDK to `17`.
+     - Maintained Android SDK configuration (`compileSdk = 36`, `targetSdk = 36`, `minSdk = 24`).
+  2. Engine Architecture & Lifecycle Port (Phase B):
+     - Updated `SingBoxEngine` interface and `SingBoxAdapter`: ported SFA / BitProxy lifecycle incorporating `setupEnvironment(baseDir, workingDir, tempDir)`, `checkConfig(configJson)`, `initialize()`, `start()`, `stop()`, and `reload()`.
+     - Integrated pre-flight configuration validation via native `Libbox.checkConfig(configJson)` before starting or reloading (BitProxy patch 0007).
+     - Implemented service start failure notification and teardown fallback (BitProxy patch 0008).
+     - Implemented reconnect and service state resync handling (BitProxy patch 0011).
+     - Maintained 10-second watchdog timeout (`withTimeoutOrNull(10_000L)`) on `start()` preventing deadlocks (BitProxy patch 0034).
+     - Maintained `onRevoke()` listener in `VianshieldVpnService` for system VPN revocation (BitProxy patch 0040).
+     - Maintained TUN file descriptor tracking and detached fd ownership transfer to Go runtime, preventing fd leaks and double-close crashes (BitProxy patch 0041).
+     - Verified `gvisor` userspace stack stability: omitted custom `sing-tun` patch (`0001-system-stack-listen-again...`) because userspace stack does not encounter OS host TCP listener socket reuse conflicts.
+  3. WireGuard Configuration Schema (Phase C):
+     - Completely eliminated the `experimental.cache_file` block from `toSingBoxJson()`: verified that passing app-private sandbox directories via `Libbox.setup` eliminates `read-only file system` without config file workarounds.
+     - Preserved all WireGuard parameters: private key, peer public key, preshared key, endpoint, allowed IPs, persistent keepalive, MTU 1280, DNS servers, and DNS routing detour (`wg-out`).
+     - Verified that generated configurations pass local syntax validation and `Libbox.checkConfig`.
+  4. UI Scope & Honest Status (Phase D):
+     - Preserved existing 4 persistent tabs (`Main`, `Firewall`, `VPN`, `Settings`) with Light Sky Blue theme.
+     - Kept unfinished features (per-app firewall, speed exceptions, DNS changer, ad filter) as explicit, honest inactive placeholders.
+     - Updated `DiagnosticsScreen.kt` and `SettingsScreen.kt` to report sing-box core `v1.14.4`, `SFA / BitProxy Command-Client Lifecycle`, and `gVisor Userspace Stack`.
+  5. Single Job, Single Dual-ARM APK Workflow (Phase E):
+     - Consolidated `.github/workflows/build-vianshield.yml` into a single runner job (`build-vianshield`).
+     - Checkout sing-box `v1.14.4`, build `libbox.aar` internally, copy directly to `app/libs/libbox.aar`.
+     - Build single Dual-ARM debug APK (`armeabi-v7a` and `arm64-v8a`) staged at `dist/vianshield-dual-arm-debug.apk`.
+     - Verified existence with `test -s` and native ABIs with `unzip -l`.
+     - Configured artifact upload for ONLY the single APK artifact (no standalone AAR, no split APKs).
+  6. Verification & Regression Suite (Phase F):
+     - Updated unit tests in `WireGuardConfigParserTest.kt` and `VianshieldPhase1Test.kt` to verify `experimental.cache_file` elimination and `checkConfig` / `reload` / `setupEnvironment` methods.
+     - Executed `compile_applet`: Build succeeded in 36s.
+     - Executed `gradle :app:testDebugUnitTest`: BUILD SUCCESSFUL in 27s (all 32 tasks, all tests passed).
+     - Silent security scan: verified zero exposed credentials, keystores, or unignored secrets.
+* **How it was verified:**
+  - Local build only: `compile_applet` executed and succeeded with 0 errors.
+  - Local JVM tests: `gradle :app:testDebugUnitTest` executed and all unit tests passed (`BUILD SUCCESSFUL in 27s`).
+  - Workspace security scan: clean (zero credentials or unignored secrets).
+  - Remote verification: pending next GitHub Actions run and physical device installation.
+* **Any deviation from what was requested, and why:** None. Engine version upgraded to stable v1.14.4, cache-file workaround eliminated, and single-job dual-ARM APK workflow configured exactly as specified.
+* **Any known issue or follow-up needed:** Ready for GitHub export and CI workflow run. On-device physical testing required to confirm tunnel connection on device.

@@ -78,7 +78,7 @@ class VianshieldPhase1Test {
         assertTrue(root.has("endpoints"))
         assertTrue(root.has("outbounds"))
         assertTrue(root.has("route"))
-        assertTrue(root.has("experimental"))
+        assertFalse("In sing-box v1.14.4, experimental.cache_file is eliminated", root.has("experimental"))
 
         val inbounds = root.getJSONArray("inbounds")
         val tun = inbounds.getJSONObject(0)
@@ -177,11 +177,15 @@ class VianshieldPhase1Test {
     @Test
     fun singBoxAdapter_lifecycleSimulation() {
         val adapter = SingBoxAdapter(allowSimulationForTesting = true)
-        assertEquals("sing-box v1.11.0", adapter.getEngineVersion())
+        assertEquals("sing-box v1.14.4", adapter.getEngineVersion())
         assertFalse(adapter.isRunning())
 
         val testProfile = WireGuardConfigParser.parse(WireGuardConfigParser.createDefaultTestConfig()).getOrThrow()
         val json = WireGuardConfigParser.toSingBoxJson(testProfile)
+
+        // Verify checkConfig passes
+        val checkRes = adapter.checkConfig(json)
+        assertTrue("checkConfig must succeed for valid configuration", checkRes.isSuccess)
 
         val callback = object : SingBoxPlatformCallback {
             override fun openTun(options: Any?): Int = 42
@@ -197,9 +201,26 @@ class VianshieldPhase1Test {
         assertTrue(startResult.isSuccess)
         assertTrue(adapter.isRunning())
 
+        // Test reload with valid config (BitProxy patch 0007)
+        val reloadResult = adapter.reload(json)
+        assertTrue("reload with valid config should succeed", reloadResult.isSuccess)
+
+        // Test reload with invalid config (must reject without changing running state)
+        val badJson = "{ \"invalid\": true }"
+        val badReloadResult = adapter.reload(badJson)
+        assertTrue("reload with bad config must fail", badReloadResult.isFailure)
+
         val stopResult = adapter.stop()
         assertTrue(stopResult.isSuccess)
         assertFalse(adapter.isRunning())
+    }
+
+    @Test
+    fun singBoxStorageManager_setupEnvironment_registersDirectories() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val adapter = SingBoxAdapter(allowSimulationForTesting = true)
+        val setupResult = SingBoxStorageManager.setupEnvironment(context, adapter)
+        assertTrue("Environment setup must succeed", setupResult.isSuccess)
     }
 
     @Test

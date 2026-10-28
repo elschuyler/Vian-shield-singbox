@@ -153,7 +153,7 @@ fun DiagnosticsScreen(
                             color = if (isNativeAvailable) SkyBluePrimaryContainer else Color(0xFFFEF3C7)
                         ) {
                             Text(
-                                text = if (isNativeAvailable) "libbox Native" else "Reflection Bridge",
+                                text = if (isNativeAvailable) "libbox Native" else "SFA Lifecycle Bridge",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = if (isNativeAvailable) SkyBlueOnPrimaryContainer else Color(0xFF92400E),
@@ -164,11 +164,13 @@ fun DiagnosticsScreen(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    DiagnosticRow("Pinned Engine Version", "sing-box v1.11.0")
-                    DiagnosticRow("Native libbox.aar Presence", if (isNativeAvailable) "Loaded & Verified" else "Pending CI AAR build")
+                    DiagnosticRow("Pinned Engine Version", "sing-box v1.14.4")
+                    DiagnosticRow("Native libbox.aar Presence", if (isNativeAvailable) "Loaded & Verified (SFA f87c2eb)" else "Pending CI AAR build")
+                    DiagnosticRow("Integration Architecture", "SFA / BitProxy Command-Client Lifecycle")
                     DiagnosticRow("Userspace Network Stack", "gVisor (non-root Android userspace)")
                     DiagnosticRow("Socket Loop Protection", "VpnService.protect(fd) enforced")
-                    DiagnosticRow("Cache Storage Location", "files/singbox/cache.db (App-Private)")
+                    DiagnosticRow("Sandbox Storage Paths", "filesDir / cacheDir (App-Private)")
+                    DiagnosticRow("Config Validation", "Verified via Libbox.checkConfig")
                     DiagnosticRow("Lifecycle Serialization", "Mutex protected with 10s watchdog")
                     DiagnosticRow("Teardown Ordering", "BoxService.stop() -> TUN close")
                 }

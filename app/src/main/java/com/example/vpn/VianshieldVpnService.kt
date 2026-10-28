@@ -128,35 +128,33 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
                 val profile = parseResult.getOrThrow()
                 activeProfile = profile
 
-                // 2. Prepare app-private cache storage & Transform to sing-box v1.11 JSON
-                _vpnState.value = VpnState.Starting("STAGE 2: Preparing app-private storage & generating configuration")
-                val cacheStorageResult = SingBoxStorageManager.prepareCacheStorage(this@VianshieldVpnService)
-                val (cacheFilePath, enableCache) = if (cacheStorageResult.isSuccess) {
-                    val path = cacheStorageResult.getOrThrow()
-                    OperationalLogCatcher.info(
-                        LogCategory.ENGINE_INIT,
-                        "VpnService",
-                        "STAGE 2: App-private cache storage verified at: $path"
-                    )
-                    Pair(path, true)
-                } else {
-                    val warn = "Storage preparation failed (${cacheStorageResult.exceptionOrNull()?.message}); disabling cache_file as safe fallback"
+                // 2. Prepare app sandbox directories and generate sing-box v1.14.4 JSON
+                _vpnState.value = VpnState.Starting("STAGE 2: Bootstrapping sandbox & generating configuration")
+                val envSetupResult = SingBoxStorageManager.setupEnvironment(this@VianshieldVpnService, singBoxEngine)
+                if (envSetupResult.isFailure) {
+                    val warn = "Sandbox environment setup warning: ${envSetupResult.exceptionOrNull()?.message}"
                     OperationalLogCatcher.warn(LogCategory.ENGINE_INIT, "VpnService", warn)
-                    Pair(null, false)
                 }
 
-                val singBoxJson = WireGuardConfigParser.toSingBoxJson(
-                    profile = profile,
-                    cacheFilePath = cacheFilePath,
-                    enableCacheFile = enableCache
-                )
+                val singBoxJson = WireGuardConfigParser.toSingBoxJson(profile)
                 OperationalLogCatcher.info(
                     LogCategory.CONFIG_VALIDATION,
                     "VpnService",
-                    "STAGE 2: Generated sing-box configuration (gvisor stack, MTU=${profile.mtu}, cache_file=${if (enableCache) cacheFilePath else "disabled"}, route auto_detect=true, addresses=${profile.addresses.joinToString(",")})"
+                    "STAGE 2: Generated sing-box v1.14.4 configuration (gvisor stack, MTU=${profile.mtu}, route auto_detect=true, addresses=${profile.addresses.joinToString(",")})"
                 )
 
-                // 3. Verify native binary availability before claiming connection
+                // 3. Pre-validate configuration schema via Libbox.checkConfig (BitProxy patch 0007)
+                val checkResult = singBoxEngine.checkConfig(singBoxJson)
+                if (checkResult.isFailure) {
+                    val err = checkResult.exceptionOrNull()?.message ?: "Configuration validation failed"
+                    OperationalLogCatcher.error(LogCategory.CONFIG_VALIDATION, "VpnService", "STAGE 2 FAILED: $err")
+                    _vpnState.value = VpnState.Error("ERR_CONFIG_INVALID", err)
+                    stopForegroundSafely()
+                    stopSelfResult(startId)
+                    return@withLock
+                }
+
+                // 4. Verify native binary availability before claiming connection
                 if (!singBoxEngine.isNativeBinaryAvailable()) {
                     val missingMsg = "sing-box native engine (libbox.aar) has not been compiled yet. Run the GitHub Actions workflow (.github/workflows/build-vianshield.yml) to generate libbox.aar."
                     OperationalLogCatcher.error(LogCategory.ENGINE_INIT, "VpnService", "STAGE 2 FAILED: $missingMsg")

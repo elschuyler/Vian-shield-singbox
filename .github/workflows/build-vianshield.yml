@@ -1,4 +1,4 @@
-name: Build Vianshield Engine & APK
+name: Build Vianshield Single Dual-ARM APK
 
 on:
   push:
@@ -10,32 +10,41 @@ on:
       singbox_version:
         description: 'sing-box Git tag or release version to compile'
         required: true
-        default: 'v1.11.0'
+        default: 'v1.14.4'
 
 permissions:
   contents: read
 
 jobs:
-  build-singbox-engine:
-    name: Build sing-box libbox.aar
+  build-vianshield:
+    name: Build Native libbox & Dual-ARM APK
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout sing-box repository
+      - name: Checkout Vianshield repository
+        uses: actions/checkout@v4
+
+      - name: Checkout sing-box repository (pinned v1.14.4)
         uses: actions/checkout@v4
         with:
           repository: SagerNet/sing-box
-          ref: ${{ github.event.inputs.singbox_version || 'v1.11.0' }}
+          ref: ${{ github.event.inputs.singbox_version || 'v1.14.4' }}
           path: sing-box-source
           fetch-depth: 1
           submodules: recursive
 
-      - name: Set up Go 1.23
+      - name: Set up Go 1.24
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.24'
           cache-dependency-path: sing-box-source/go.sum
 
-      - name: Set up Android NDK
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android NDK (r26d)
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
@@ -58,7 +67,7 @@ jobs:
           echo "ANDROID_NDK_ROOT=$NDK_PATH" >> $GITHUB_ENV
           echo "${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
-      - name: Verify NDK & Go Toolchain
+      - name: Verify Toolchain Paths
         run: |
           echo "=== Go Toolchain ==="
           go version
@@ -78,40 +87,10 @@ jobs:
         run: |
           go run ./cmd/internal/build_libbox -target android
 
-      - name: Verify libbox.aar artifact
+      - name: Place libbox.aar in app/libs/
         run: |
-          test -f sing-box-source/libbox.aar
-          ls -lh sing-box-source/libbox.aar
-
-      - name: Upload libbox.aar artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: libbox-aar
-          path: sing-box-source/libbox.aar
-          retention-days: 14
-
-  build-vianshield-apk:
-    name: Build Vianshield Debug APK
-    needs: build-singbox-engine
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Vianshield repository
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Download libbox.aar artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: libbox-aar
-          path: app/libs
-
-      - name: Verify libbox.aar placement
-        run: |
+          mkdir -p app/libs
+          cp sing-box-source/libbox.aar app/libs/libbox.aar
           test -f app/libs/libbox.aar
           ls -lh app/libs/libbox.aar
 
@@ -142,10 +121,11 @@ jobs:
       - name: Diagnostic listing on failure
         if: failure()
         run: |
-          echo "=== Diagnostic listing of Gradle build outputs ==="
+          echo "=== Diagnostic listing of build outputs ==="
           ls -laR app/build/outputs/ || true
+          ls -la app/libs/ || true
 
-      - name: Upload Dual-ARM Debug APK Artifact
+      - name: Upload Single Dual-ARM Debug APK Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:

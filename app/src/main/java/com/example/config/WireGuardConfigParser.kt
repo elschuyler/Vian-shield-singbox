@@ -245,32 +245,19 @@ object WireGuardConfigParser {
     }
 
     /**
-     * Converts a validated WireGuardProfile to sing-box v1.11 compatible JSON.
+     * Converts a validated WireGuardProfile to sing-box v1.14.4 compatible JSON.
      * Uses "gvisor" userspace stack on Android so that raw IP packets from openTun
      * are translated into TCP/UDP connections by sing-box without requiring root system netlink.
+     *
+     * In sing-box v1.14.4, directory paths are passed to the engine via Libbox.setup(),
+     * completely eliminating the need for the experimental.cache_file workaround.
      */
     fun toSingBoxJson(
         profile: WireGuardProfile,
-        cacheFilePath: String? = null,
-        enableCacheFile: Boolean = (cacheFilePath != null)
+        @Suppress("UNUSED_PARAMETER") cacheFilePath: String? = null,
+        @Suppress("UNUSED_PARAMETER") enableCacheFile: Boolean = false
     ): String {
         val root = JSONObject()
-
-        // Experimental configuration: cache_file path in app-private storage
-        // Critical for Android: Default relative path "cache.db" resolves to "/" (read-only rootfs).
-        // Providing an absolute path in app-private storage or explicitly disabling when absent
-        // prevents the "initialize cache-file: open cache.db: read-only file system" startup failure.
-        val experimentalObj = JSONObject()
-        val cacheFileObj = JSONObject()
-        if (enableCacheFile && !cacheFilePath.isNullOrBlank()) {
-            cacheFileObj.put("enabled", true)
-            cacheFileObj.put("path", cacheFilePath)
-            cacheFileObj.put("store_fakeip", false)
-        } else {
-            cacheFileObj.put("enabled", false)
-        }
-        experimentalObj.put("cache_file", cacheFileObj)
-        root.put("experimental", experimentalObj)
 
         // Log configuration
         val logObj = JSONObject()
@@ -314,11 +301,9 @@ object WireGuardConfigParser {
         inboundsArray.put(tunInbound)
         root.put("inbounds", inboundsArray)
 
-        // Endpoints: WireGuard endpoint (pinned sing-box v1.11.0 schema)
-        // In sing-box v1.11+, WireGuard is configured under root "endpoints" with a "peers" array.
-        // Legacy "outbounds" WireGuard struct rejects "persistent_keepalive_interval" with
-        // 'json: unknown field "persistent_keepalive_interval"'. WireGuardEndpointOptions natively
-        // supports and honors "persistent_keepalive_interval" inside each peer object.
+        // Endpoints: WireGuard endpoint (sing-box v1.14.4 schema)
+        // WireGuard is configured under root "endpoints" with a "peers" array,
+        // natively supporting "persistent_keepalive_interval" per peer.
         val endpointsArray = JSONArray()
         val wgEndpoint = JSONObject()
         wgEndpoint.put("type", "wireguard")
