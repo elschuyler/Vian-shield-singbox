@@ -255,15 +255,21 @@ class WireGuardConfigParserTest {
 
         // Verify outbounds
         val outbounds = root.getJSONArray("outbounds")
-        val wg = outbounds.getJSONObject(0)
-        assertEquals("wireguard", wg.getString("type"))
-        assertEquals(profile.endpointHost, wg.getString("server"))
-        assertEquals(profile.endpointPort, wg.getInt("server_port"))
-        assertEquals(profile.privateKey, wg.getString("private_key"))
-
-        val dnsOut = outbounds.getJSONObject(1)
+        val dnsOut = outbounds.getJSONObject(0)
         assertEquals("dns", dnsOut.getString("type"))
         assertEquals("dns-out", dnsOut.getString("tag"))
+
+        // Verify endpoints (modern sing-box v1.11.0 WireGuard schema with keepalive support)
+        assertTrue("root must contain endpoints array", root.has("endpoints"))
+        val endpoints = root.getJSONArray("endpoints")
+        val wg = endpoints.getJSONObject(0)
+        assertEquals("wireguard", wg.getString("type"))
+        assertEquals("wg-out", wg.getString("tag"))
+        assertEquals(profile.privateKey, wg.getString("private_key"))
+        val peer = wg.getJSONArray("peers").getJSONObject(0)
+        assertEquals(profile.endpointHost, peer.getString("address"))
+        assertEquals(profile.endpointPort, peer.getInt("port"))
+        assertEquals(profile.peerPublicKey, peer.getString("public_key"))
 
         // Verify DNS detour
         val dns = root.getJSONObject("dns")
@@ -318,9 +324,11 @@ class WireGuardConfigParserTest {
         assertEquals(25, profile.persistentKeepalive)
 
         val json = JSONObject(WireGuardConfigParser.toSingBoxJson(profile))
-        val wgOutbound = json.getJSONArray("outbounds").getJSONObject(0)
-        assertTrue("WireGuard outbound must contain persistent_keepalive_interval", wgOutbound.has("persistent_keepalive_interval"))
-        assertEquals(25, wgOutbound.getInt("persistent_keepalive_interval"))
+        val endpoints = json.getJSONArray("endpoints")
+        val wgEndpoint = endpoints.getJSONObject(0)
+        val peer = wgEndpoint.getJSONArray("peers").getJSONObject(0)
+        assertTrue("WireGuard peer must contain persistent_keepalive_interval", peer.has("persistent_keepalive_interval"))
+        assertEquals(25, peer.getInt("persistent_keepalive_interval"))
     }
 
     @Test

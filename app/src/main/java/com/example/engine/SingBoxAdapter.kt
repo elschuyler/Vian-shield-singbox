@@ -27,6 +27,16 @@ class SingBoxAdapter(
         const val ENGINE_PINNED_VERSION = "sing-box v1.11.0"
         private const val LIBBOX_CLASS = "io.nekohasekai.libbox.Libbox"
         private const val PLATFORM_INTERFACE_CLASS = "io.nekohasekai.libbox.PlatformInterface"
+
+        fun isNativeAvailable(): Boolean {
+            return try {
+                Class.forName(LIBBOX_CLASS)
+                Class.forName(PLATFORM_INTERFACE_CLASS)
+                true
+            } catch (_: ClassNotFoundException) {
+                false
+            }
+        }
     }
 
     private val isEngineRunning = AtomicBoolean(false)
@@ -37,15 +47,7 @@ class SingBoxAdapter(
 
     override fun isRunning(): Boolean = isEngineRunning.get()
 
-    override fun isNativeBinaryAvailable(): Boolean {
-        return try {
-            Class.forName(LIBBOX_CLASS)
-            Class.forName(PLATFORM_INTERFACE_CLASS)
-            true
-        } catch (_: ClassNotFoundException) {
-            false
-        }
-    }
+    override fun isNativeBinaryAvailable(): Boolean = isNativeAvailable()
 
     override fun initialize(configJson: String, platformCallback: SingBoxPlatformCallback): Result<Unit> {
         this.platformCallback = platformCallback

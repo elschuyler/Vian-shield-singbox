@@ -27,11 +27,5 @@ val StatusError = Color(0xFFDC2626) // Red 600: high contrast error state
 val StatusErrorContainer = Color(0xFFFEE2E2) // Red 100: soft error surface
 val StatusOnErrorContainer = Color(0xFF991B1B) // Red 800: deep error text
 
-// Retained Dark Mode Fallback Palette
-val ShieldDarkBackground = Color(0xFF0B111E)
-val ShieldDarkSurface = Color(0xFF131C2E)
-val ShieldDarkSurfaceVariant = Color(0xFF1E293B)
-val ShieldPrimaryCyan = Color(0xFF00ADB5)
-val ShieldSecondarySky = Color(0xFF38BDF8)
-val ShieldTertiaryIndigo = Color(0xFF818CF8)
+
 

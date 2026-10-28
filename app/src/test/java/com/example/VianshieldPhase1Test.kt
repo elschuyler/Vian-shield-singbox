@@ -74,7 +74,7 @@ class VianshieldPhase1Test {
         assertTrue(root.has("log"))
         assertTrue(root.has("dns"))
         assertTrue(root.has("inbounds"))
-        assertTrue(root.has("outbounds"))
+        assertTrue(root.has("endpoints"))
         assertTrue(root.has("route"))
 
         val inbounds = root.getJSONArray("inbounds")
@@ -82,11 +82,13 @@ class VianshieldPhase1Test {
         assertEquals("tun", tun.getString("type"))
         assertEquals("vianshield-tun", tun.getString("interface_name"))
 
-        val outbounds = root.getJSONArray("outbounds")
-        val wg = outbounds.getJSONObject(0)
+        val endpoints = root.getJSONArray("endpoints")
+        val wg = endpoints.getJSONObject(0)
         assertEquals("wireguard", wg.getString("type"))
-        assertEquals(profile.endpointHost, wg.getString("server"))
-        assertEquals(profile.endpointPort, wg.getInt("server_port"))
+        assertEquals("wg-out", wg.getString("tag"))
+        val peer = wg.getJSONArray("peers").getJSONObject(0)
+        assertEquals(profile.endpointHost, peer.getString("address"))
+        assertEquals(profile.endpointPort, peer.getInt("port"))
     }
 
     @Test
@@ -198,9 +200,18 @@ class VianshieldPhase1Test {
     }
 
     @Test
-    fun diagnosticViewModel_navigationBetweenMainAndLogKeeper() {
+    fun diagnosticViewModel_navigationAcrossAllScreens() {
         val viewModel = DiagnosticViewModel(ApplicationProvider.getApplicationContext())
         assertEquals(AppScreen.MAIN, viewModel.currentScreen.value)
+
+        viewModel.navigateTo(AppScreen.PROFILES)
+        assertEquals(AppScreen.PROFILES, viewModel.currentScreen.value)
+
+        viewModel.navigateTo(AppScreen.DIAGNOSTICS)
+        assertEquals(AppScreen.DIAGNOSTICS, viewModel.currentScreen.value)
+
+        viewModel.navigateTo(AppScreen.SETTINGS)
+        assertEquals(AppScreen.SETTINGS, viewModel.currentScreen.value)
 
         viewModel.navigateTo(AppScreen.LOG_KEEPER)
         assertEquals(AppScreen.LOG_KEEPER, viewModel.currentScreen.value)

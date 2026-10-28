@@ -23,11 +23,15 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
 enum class AppScreen {
     MAIN,
-    LOG_KEEPER
+    PROFILES,
+    LOG_KEEPER,
+    DIAGNOSTICS,
+    SETTINGS
 }
 
 enum class TimeFilter(val label: String, val durationMs: Long?) {
@@ -65,6 +69,10 @@ class DiagnosticViewModel(application: Application) : AndroidViewModel(applicati
 
     private val _currentConfig = MutableStateFlow(WireGuardConfigParser.createDefaultTestConfig())
     val currentConfig: StateFlow<String> = _currentConfig.asStateFlow()
+
+    val activeProfile: StateFlow<WireGuardProfile?> = _currentConfig.map { conf ->
+        WireGuardConfigParser.parse(conf).getOrNull()
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, WireGuardConfigParser.parse(_currentConfig.value).getOrNull())
 
     private val _importedProfilePreview = MutableStateFlow<WireGuardProfile?>(null)
     val importedProfilePreview: StateFlow<WireGuardProfile?> = _importedProfilePreview.asStateFlow()
@@ -145,6 +153,15 @@ class DiagnosticViewModel(application: Application) : AndroidViewModel(applicati
 
     fun updateConfig(newConfig: String) {
         _currentConfig.value = newConfig
+    }
+
+    fun resetToDefaultConfig() {
+        _currentConfig.value = WireGuardConfigParser.createDefaultTestConfig()
+        OperationalLogCatcher.info(
+            LogCategory.CONFIG_VALIDATION,
+            "DiagnosticViewModel",
+            "Reset active WireGuard configuration to default test profile"
+        )
     }
 
     fun checkPermissionIntent(): Intent? {

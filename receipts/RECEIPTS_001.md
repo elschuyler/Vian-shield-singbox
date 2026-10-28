@@ -413,6 +413,44 @@
 * **Any deviation from what was requested, and why:** None.
 * **Any known issue or follow-up needed:** Awaiting remote GitHub Actions workflow run execution.
 
+---
+
+### Entry: Consolidated Runtime, UI & Dual-ABI Release Fix
+* **Timestamp:** 2026-10-28 04:10 UTC
+* **One-line summary of what was requested:** Fix sing-box v1.11.0 keepalive startup failure via root `endpoints` schema, enforce exclusive Light Sky Blue theme with light system bars, decompose Main screen into 5 dedicated pages, configure single Dual-ARM APK in Gradle and CI, and verify all tests.
+* **Exact files touched:**
+  - `/app/src/main/java/com/example/config/WireGuardConfigParser.kt`
+  - `/app/src/main/java/com/example/ui/theme/Color.kt`
+  - `/app/src/main/java/com/example/ui/theme/Theme.kt`
+  - `/app/src/main/res/values/themes.xml`
+  - `/app/src/main/java/com/example/ui/DiagnosticViewModel.kt`
+  - `/app/src/main/java/com/example/ui/MainScreen.kt`
+  - `/app/src/main/java/com/example/ui/ProfilesScreen.kt`
+  - `/app/src/main/java/com/example/ui/DiagnosticsScreen.kt`
+  - `/app/src/main/java/com/example/ui/SettingsScreen.kt`
+  - `/app/src/main/java/com/example/ui/DiagnosticScreen.kt`
+  - `/app/src/main/java/com/example/MainActivity.kt`
+  - `/app/src/main/java/com/example/engine/SingBoxAdapter.kt`
+  - `/app/build.gradle.kts`
+  - `/.github/workflows/build-vianshield.yml`
+  - `/app/src/test/java/com/example/config/WireGuardConfigParserTest.kt`
+  - `/app/src/test/java/com/example/VianshieldPhase1Test.kt`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_001.md`
+* **What was actually done:**
+  1. Traced sing-box v1.11.0 Go source: `LegacyWireGuardOutboundOptions` does not support `persistent_keepalive_interval`, whereas `WireGuardEndpointOptions` (`endpoints[]`) natively contains `peers: [WireGuardPeer]` with `persistent_keepalive_interval`. Migrated WireGuard JSON generation to `endpoints` with `tag: "wg-out"`, setting `route.final: "wg-out"` and `dns.servers[0].detour: "wg-out"`.
+  2. Enforced Light Sky Blue theme as the ONLY theme: removed `DarkColorScheme` and dark tokens, added `WindowCompat.getInsetsController()` to force light system status and navigation bars with dark icons, and set theme parent to `android:Theme.Material.Light.NoActionBar`.
+  3. Decomposed Main screen into 5 focused screens: `MainScreen` (concise dashboard with connection card, toggle button, selected profile, module navigation grid), `ProfilesScreen` (profile summary, SAF import, confirmation dialog, raw editor, reset to default), `DiagnosticsScreen` (native presence, BoxService status, userspace stack, loop protection, error diagnosis), `SettingsScreen` (master log switch, 3 MiB rolling disk limit indicator, clear logs, tunnel policy info), and `LogKeeperScreen` (audit logs, search, severity/time filters, export).
+  4. Configured single Dual-ARM APK in `app/build.gradle.kts` via `ndk.abiFilters.addAll(listOf("armeabi-v7a", "arm64-v8a"))`. Updated `.github/workflows/build-vianshield.yml` to build one APK, stage to `dist/vianshield-dual-arm-debug.apk`, verify both `lib/armeabi-v7a/` and `lib/arm64-v8a/` inside the APK via `unzip -l`, and upload single artifact `vianshield-dual-arm-debug-apk`.
+  5. Updated unit tests (`WireGuardConfigParserTest`, `VianshieldPhase1Test`) to assert `endpoints` schema and navigation across all 5 screens.
+* **How it was verified:**
+  - Local build only: `compile_applet` executed and succeeded.
+  - Local JVM tests: `gradle :app:testDebugUnitTest` executed and all unit tests passed (`BUILD SUCCESSFUL in 47s`).
+  - Workspace security scan: silent scan confirmed zero committed credentials or unignored secrets.
+  - Remote verification: pending next GitHub Actions run on push/dispatch.
+* **Any deviation from what was requested, and why:** None.
+* **Any known issue or follow-up needed:** Ready for GitHub export and CI workflow trigger. Note: `RECEIPTS_001.md` is now near the 500-line cap (~480 lines); next entry should transition to `RECEIPTS_002.md`.
+
 
 
 

@@ -8,9 +8,12 @@ import androidx.activity.viewModels
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import com.example.ui.AppScreen
-import com.example.ui.DiagnosticScreen
+import com.example.ui.DiagnosticsScreen
 import com.example.ui.DiagnosticViewModel
 import com.example.ui.LogKeeperScreen
+import com.example.ui.MainScreen
+import com.example.ui.ProfilesScreen
+import com.example.ui.SettingsScreen
 import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
@@ -26,8 +29,28 @@ class MainActivity : ComponentActivity() {
 
                 when (currentScreen) {
                     AppScreen.MAIN -> {
-                        DiagnosticScreen(
+                        MainScreen(
                             viewModel = diagnosticViewModel,
+                            onNavigate = { diagnosticViewModel.navigateTo(it) }
+                        )
+                    }
+                    AppScreen.PROFILES -> {
+                        ProfilesScreen(
+                            viewModel = diagnosticViewModel,
+                            onBack = { diagnosticViewModel.navigateTo(AppScreen.MAIN) }
+                        )
+                    }
+                    AppScreen.DIAGNOSTICS -> {
+                        DiagnosticsScreen(
+                            viewModel = diagnosticViewModel,
+                            onBack = { diagnosticViewModel.navigateTo(AppScreen.MAIN) },
+                            onOpenLogKeeper = { diagnosticViewModel.navigateTo(AppScreen.LOG_KEEPER) }
+                        )
+                    }
+                    AppScreen.SETTINGS -> {
+                        SettingsScreen(
+                            viewModel = diagnosticViewModel,
+                            onBack = { diagnosticViewModel.navigateTo(AppScreen.MAIN) },
                             onOpenLogKeeper = { diagnosticViewModel.navigateTo(AppScreen.LOG_KEEPER) }
                         )
                     }

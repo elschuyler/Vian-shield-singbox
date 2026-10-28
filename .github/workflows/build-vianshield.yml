@@ -118,35 +118,26 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Build ARM64 Optimized Debug APK (~30 MB)
-        run: |
-          mkdir -p dist
-          gradle :app:assembleDebug -PtargetAbi=arm64-v8a --stacktrace
-          cp app/build/outputs/apk/debug/app-debug.apk dist/vianshield-arm64-v8a-debug.apk
-
-      - name: Build Universal Debug APK (~128 MB)
+      - name: Build Dual-ARM Debug APK (armeabi-v7a + arm64-v8a)
         run: |
           mkdir -p dist
           gradle :app:assembleDebug --stacktrace
-          cp app/build/outputs/apk/debug/app-debug.apk dist/vianshield-universal-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist/vianshield-dual-arm-debug.apk
 
-      - name: Verify Staged Debug APKs
+      - name: Verify Staged Dual-ARM Debug APK
         run: |
-          echo "=== Verifying staged APKs in dist/ ==="
-          if [ ! -s dist/vianshield-arm64-v8a-debug.apk ]; then
-            echo "::error::dist/vianshield-arm64-v8a-debug.apk does not exist or is empty!"
-            echo "=== Listing Gradle APK output directory ==="
+          echo "=== Verifying staged dual-ARM APK in dist/ ==="
+          if [ ! -s dist/vianshield-dual-arm-debug.apk ]; then
+            echo "::error::dist/vianshield-dual-arm-debug.apk does not exist or is empty!"
             ls -la app/build/outputs/apk/debug/ || echo "Directory app/build/outputs/apk/debug/ does not exist"
             exit 1
           fi
-          if [ ! -s dist/vianshield-universal-debug.apk ]; then
-            echo "::error::dist/vianshield-universal-debug.apk does not exist or is empty!"
-            echo "=== Listing Gradle APK output directory ==="
-            ls -la app/build/outputs/apk/debug/ || echo "Directory app/build/outputs/apk/debug/ does not exist"
-            exit 1
-          fi
-          echo "=== Both staged APKs verified successfully ==="
-          ls -lh dist/*.apk
+          echo "=== Verifying native ABI contents in APK ==="
+          unzip -l dist/vianshield-dual-arm-debug.apk "lib/*"
+          unzip -l dist/vianshield-dual-arm-debug.apk | grep "lib/armeabi-v7a/" || { echo "::error::Missing armeabi-v7a native libraries!"; exit 1; }
+          unzip -l dist/vianshield-dual-arm-debug.apk | grep "lib/arm64-v8a/" || { echo "::error::Missing arm64-v8a native libraries!"; exit 1; }
+          echo "=== Dual-ARM APK verified successfully ==="
+          ls -lh dist/vianshield-dual-arm-debug.apk
 
       - name: Diagnostic listing on failure
         if: failure()
@@ -154,10 +145,10 @@ jobs:
           echo "=== Diagnostic listing of Gradle build outputs ==="
           ls -laR app/build/outputs/ || true
 
-      - name: Upload Debug APK Artifacts
+      - name: Upload Dual-ARM Debug APK Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: vianshield-debug-apks
-          path: dist/*.apk
+          name: vianshield-dual-arm-debug-apk
+          path: dist/vianshield-dual-arm-debug.apk
           retention-days: 14

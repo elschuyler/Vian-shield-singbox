@@ -19,12 +19,9 @@ android {
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-    // Priority 4: Support single-ABI build targeting (e.g. -PtargetAbi=arm64-v8a) to reduce APK size to ~30MB
-    val targetAbi = project.findProperty("targetAbi") as? String
-    if (!targetAbi.isNullOrBlank()) {
-      ndk {
-        abiFilters.add(targetAbi)
-      }
+    // Dual-ARM architecture support: 32-bit ARM (armeabi-v7a) and 64-bit ARM (arm64-v8a)
+    ndk {
+      abiFilters.addAll(listOf("armeabi-v7a", "arm64-v8a"))
     }
   }
 

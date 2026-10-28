@@ -294,28 +294,46 @@ object WireGuardConfigParser {
         inboundsArray.put(tunInbound)
         root.put("inbounds", inboundsArray)
 
-        // Outbound: WireGuard + DNS + Direct
-        val outboundsArray = JSONArray()
-        val wgOutbound = JSONObject()
-        wgOutbound.put("type", "wireguard")
-        wgOutbound.put("tag", "wg-out")
-        wgOutbound.put("server", profile.endpointHost)
-        wgOutbound.put("server_port", profile.endpointPort)
+        // Endpoints: WireGuard endpoint (pinned sing-box v1.11.0 schema)
+        // In sing-box v1.11+, WireGuard is configured under root "endpoints" with a "peers" array.
+        // Legacy "outbounds" WireGuard struct rejects "persistent_keepalive_interval" with
+        // 'json: unknown field "persistent_keepalive_interval"'. WireGuardEndpointOptions natively
+        // supports and honors "persistent_keepalive_interval" inside each peer object.
+        val endpointsArray = JSONArray()
+        val wgEndpoint = JSONObject()
+        wgEndpoint.put("type", "wireguard")
+        wgEndpoint.put("tag", "wg-out")
         val localAddresses = JSONArray()
         for (addr in profile.addresses) {
             localAddresses.put(addr)
         }
-        wgOutbound.put("local_address", localAddresses)
-        wgOutbound.put("private_key", profile.privateKey)
-        wgOutbound.put("peer_public_key", profile.peerPublicKey)
+        wgEndpoint.put("address", localAddresses)
+        wgEndpoint.put("private_key", profile.privateKey)
+        wgEndpoint.put("mtu", profile.mtu)
+
+        val peersArray = JSONArray()
+        val peerObj = JSONObject()
+        peerObj.put("address", profile.endpointHost)
+        peerObj.put("port", profile.endpointPort)
+        peerObj.put("public_key", profile.peerPublicKey)
         if (!profile.presharedKey.isNullOrBlank()) {
-            wgOutbound.put("pre_shared_key", profile.presharedKey)
+            peerObj.put("pre_shared_key", profile.presharedKey)
         }
-        wgOutbound.put("mtu", profile.mtu)
+        val allowedIpsArray = JSONArray()
+        for (ip in profile.allowedIps) {
+            allowedIpsArray.put(ip)
+        }
+        peerObj.put("allowed_ips", allowedIpsArray)
         if (profile.persistentKeepalive != null && profile.persistentKeepalive > 0) {
-            wgOutbound.put("persistent_keepalive_interval", profile.persistentKeepalive)
+            peerObj.put("persistent_keepalive_interval", profile.persistentKeepalive)
         }
-        outboundsArray.put(wgOutbound)
+        peersArray.put(peerObj)
+        wgEndpoint.put("peers", peersArray)
+        endpointsArray.put(wgEndpoint)
+        root.put("endpoints", endpointsArray)
+
+        // Outbound: DNS + Direct (route.final resolves "wg-out" from endpoint manager)
+        val outboundsArray = JSONArray()
 
         // DNS outbound: hijacks port 53 / DNS queries from tun and passes to dns router
         val dnsOutbound = JSONObject()
