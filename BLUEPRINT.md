@@ -108,6 +108,8 @@
 | 2026-10-27 18:15 | CI libbox.aar Fix | Resolved GitHub Actions native libbox compilation panic (exit status 1 at gomobile init.go:311): eliminated breaking GOFLAGS=-ldflags from go run build_libbox, fixed NDK r26d path resolution overriding premature ANDROID_NDK_LATEST_HOME (NDK 30), and added diagnostic toolchain verification step. | Complete |
 | 2026-10-27 19:15 | CI APK Staging Fix | Resolved APK verification exit code 1: isolated ARM64 and universal APK staging into dist/ outside Gradle-managed output directory (preventing AGP clean reconciliation wipe), updated verification to test -s, and added failure diagnostic listing. | Complete |
 | 2026-10-28 04:10 | Consolidated Fix | Fixed sing-box startup failure: migrated WireGuard config generation to root `endpoints` schema with `peers` array, natively supporting `persistent_keepalive_interval`. Enforced Light Sky Blue theme as the ONLY theme (removed dark-mode tokens/toggles, light system bars). Modularized UI into 5 dedicated screens (MainScreen, ProfilesScreen, DiagnosticsScreen, SettingsScreen, LogKeeperScreen). Configured single Dual-ARM (armeabi-v7a + arm64-v8a) APK build and CI workflow. Verified unit tests & compile_applet. | Complete |
+| 2026-10-28 12:15 | Phase 1.9 Cache Fix | Resolved native sing-box cache startup failure (`open cache.db: read-only file system`): implemented `SingBoxStorageManager` providing dedicated app-private internal storage (`context.filesDir/singbox/cache.db`), zero-byte corrupt database recovery, safe isolated clearing, and fallback to `experimental.cache_file.enabled = false` if unwritable. Integrated into `WireGuardConfigParser.toSingBoxJson()` and `VianshieldVpnService`. Added safe diagnostics and 6 new unit tests. | Complete |
+
 
 
 

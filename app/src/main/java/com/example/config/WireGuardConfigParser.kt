@@ -249,8 +249,28 @@ object WireGuardConfigParser {
      * Uses "gvisor" userspace stack on Android so that raw IP packets from openTun
      * are translated into TCP/UDP connections by sing-box without requiring root system netlink.
      */
-    fun toSingBoxJson(profile: WireGuardProfile): String {
+    fun toSingBoxJson(
+        profile: WireGuardProfile,
+        cacheFilePath: String? = null,
+        enableCacheFile: Boolean = (cacheFilePath != null)
+    ): String {
         val root = JSONObject()
+
+        // Experimental configuration: cache_file path in app-private storage
+        // Critical for Android: Default relative path "cache.db" resolves to "/" (read-only rootfs).
+        // Providing an absolute path in app-private storage or explicitly disabling when absent
+        // prevents the "initialize cache-file: open cache.db: read-only file system" startup failure.
+        val experimentalObj = JSONObject()
+        val cacheFileObj = JSONObject()
+        if (enableCacheFile && !cacheFilePath.isNullOrBlank()) {
+            cacheFileObj.put("enabled", true)
+            cacheFileObj.put("path", cacheFilePath)
+            cacheFileObj.put("store_fakeip", false)
+        } else {
+            cacheFileObj.put("enabled", false)
+        }
+        experimentalObj.put("cache_file", cacheFileObj)
+        root.put("experimental", experimentalObj)
 
         // Log configuration
         val logObj = JSONObject()

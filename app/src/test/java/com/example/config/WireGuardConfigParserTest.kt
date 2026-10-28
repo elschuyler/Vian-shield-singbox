@@ -276,6 +276,39 @@ class WireGuardConfigParserTest {
         val dnsServers = dns.getJSONArray("servers")
         assertTrue(dnsServers.length() > 0)
         assertEquals("wg-out", dnsServers.getJSONObject(0).getString("detour"))
+
+        // Verify experimental cache_file configuration
+        assertTrue("root must contain experimental object", root.has("experimental"))
+        val experimental = root.getJSONObject("experimental")
+        assertTrue("experimental must contain cache_file", experimental.has("cache_file"))
+        val cacheFile = experimental.getJSONObject("cache_file")
+        assertFalse("Default toSingBoxJson without path must disable cache_file to prevent relative /cache.db error", cacheFile.getBoolean("enabled"))
+    }
+
+    @Test
+    fun toSingBoxJson_withExplicitCachePath_configuresEnabledCacheFile() {
+        val conf = WireGuardConfigParser.createDefaultTestConfig()
+        val profile = WireGuardConfigParser.parse(conf).getOrThrow()
+        val explicitPath = "/data/user/0/com.aistudio.vianshield.vxnpqk/files/singbox/cache.db"
+        val jsonStr = WireGuardConfigParser.toSingBoxJson(profile, cacheFilePath = explicitPath, enableCacheFile = true)
+
+        val root = JSONObject(jsonStr)
+        assertTrue(root.has("experimental"))
+        val cacheFile = root.getJSONObject("experimental").getJSONObject("cache_file")
+        assertTrue("cache_file must be enabled when path is provided", cacheFile.getBoolean("enabled"))
+        assertEquals(explicitPath, cacheFile.getString("path"))
+        assertFalse(cacheFile.getBoolean("store_fakeip"))
+    }
+
+    @Test
+    fun toSingBoxJson_disabledCacheFile_configuresDisabledCacheFile() {
+        val conf = WireGuardConfigParser.createDefaultTestConfig()
+        val profile = WireGuardConfigParser.parse(conf).getOrThrow()
+        val jsonStr = WireGuardConfigParser.toSingBoxJson(profile, cacheFilePath = null, enableCacheFile = false)
+
+        val root = JSONObject(jsonStr)
+        val cacheFile = root.getJSONObject("experimental").getJSONObject("cache_file")
+        assertFalse("cache_file must be disabled", cacheFile.getBoolean("enabled"))
     }
 
     @Test

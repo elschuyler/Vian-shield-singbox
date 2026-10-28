@@ -168,6 +168,7 @@ fun DiagnosticsScreen(
                     DiagnosticRow("Native libbox.aar Presence", if (isNativeAvailable) "Loaded & Verified" else "Pending CI AAR build")
                     DiagnosticRow("Userspace Network Stack", "gVisor (non-root Android userspace)")
                     DiagnosticRow("Socket Loop Protection", "VpnService.protect(fd) enforced")
+                    DiagnosticRow("Cache Storage Location", "files/singbox/cache.db (App-Private)")
                     DiagnosticRow("Lifecycle Serialization", "Mutex protected with 10s watchdog")
                     DiagnosticRow("Teardown Ordering", "BoxService.stop() -> TUN close")
                 }

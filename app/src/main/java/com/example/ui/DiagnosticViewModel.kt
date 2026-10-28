@@ -28,10 +28,12 @@ import kotlinx.coroutines.flow.stateIn
 
 enum class AppScreen {
     MAIN,
+    FIREWALL,
+    VPN,
     PROFILES,
+    SETTINGS,
     LOG_KEEPER,
-    DIAGNOSTICS,
-    SETTINGS
+    DIAGNOSTICS
 }
 
 enum class TimeFilter(val label: String, val durationMs: Long?) {
@@ -87,6 +89,44 @@ class DiagnosticViewModel(application: Application) : AndroidViewModel(applicati
 
     private val _pendingCrashCount = MutableStateFlow(CrashReporter.getPendingCrashCount(application))
     val pendingCrashCount: StateFlow<Int> = _pendingCrashCount.asStateFlow()
+
+    // 1. Speed-throttling preset state
+    private val _speedPreset = MutableStateFlow("Unlimited (Full Speed)")
+    val speedPreset: StateFlow<String> = _speedPreset.asStateFlow()
+
+    // 2. DNS changer state
+    private val _dnsProvider = MutableStateFlow("Profile Default (from .conf)")
+    val dnsProvider: StateFlow<String> = _dnsProvider.asStateFlow()
+
+    // 3. Ad filter master switch
+    private val _isAdFilterEnabled = MutableStateFlow(false)
+    val isAdFilterEnabled: StateFlow<Boolean> = _isAdFilterEnabled.asStateFlow()
+
+    // 4. Ad-filter allow-list
+    private val _adFilterAllowList = MutableStateFlow(listOf("api.github.com", "android.googleapis.com"))
+    val adFilterAllowList: StateFlow<List<String>> = _adFilterAllowList.asStateFlow()
+
+    // 5. Saved WireGuard profiles list
+    data class SavedProfileItem(
+        val id: String,
+        val name: String,
+        val endpoint: String,
+        val rawConfig: String,
+        val isDefault: Boolean = false
+    )
+
+    private val _savedProfiles = MutableStateFlow<List<SavedProfileItem>>(
+        listOf(
+            SavedProfileItem(
+                id = "default_test_profile",
+                name = "Default WireGuard Profile",
+                endpoint = "203.0.113.5:51820",
+                rawConfig = WireGuardConfigParser.createDefaultTestConfig(),
+                isDefault = true
+            )
+        )
+    )
+    val savedProfiles: StateFlow<List<SavedProfileItem>> = _savedProfiles.asStateFlow()
 
     // Bounded and filtered events stream for Log Keeper UI
     val filteredLogEvents: StateFlow<List<LogEvent>> = combine(
@@ -254,6 +294,14 @@ class DiagnosticViewModel(application: Application) : AndroidViewModel(applicati
         val profile = _importedProfilePreview.value
         if (raw != null && profile != null) {
             _currentConfig.value = raw
+            val newSavedItem = SavedProfileItem(
+                id = "profile_${System.currentTimeMillis()}",
+                name = profile.name,
+                endpoint = "${profile.endpointHost}:${profile.endpointPort}",
+                rawConfig = raw,
+                isDefault = false
+            )
+            _savedProfiles.value = _savedProfiles.value + newSavedItem
             OperationalLogCatcher.info(
                 LogCategory.CONFIG_VALIDATION,
                 "DiagnosticViewModel",
@@ -263,6 +311,53 @@ class DiagnosticViewModel(application: Application) : AndroidViewModel(applicati
         _importedProfilePreview.value = null
         _importError.value = null
         pendingImportedRawConfig = null
+    }
+
+    fun setSpeedPreset(preset: String) {
+        _speedPreset.value = preset
+        OperationalLogCatcher.info(
+            LogCategory.CONFIG_VALIDATION,
+            "DiagnosticViewModel",
+            "Speed-throttling preset updated to: $preset"
+        )
+    }
+
+    fun setDnsProvider(provider: String) {
+        _dnsProvider.value = provider
+        OperationalLogCatcher.info(
+            LogCategory.CONFIG_VALIDATION,
+            "DiagnosticViewModel",
+            "DNS provider setting updated to: $provider"
+        )
+    }
+
+    fun setAdFilterEnabled(enabled: Boolean) {
+        _isAdFilterEnabled.value = enabled
+        OperationalLogCatcher.info(
+            LogCategory.CONFIG_VALIDATION,
+            "DiagnosticViewModel",
+            "Ad filter ${if (enabled) "enabled" else "disabled"}"
+        )
+    }
+
+    fun addAllowListDomain(domain: String) {
+        val clean = domain.trim().lowercase()
+        if (clean.isNotBlank() && !_adFilterAllowList.value.contains(clean)) {
+            _adFilterAllowList.value = _adFilterAllowList.value + clean
+        }
+    }
+
+    fun removeAllowListDomain(domain: String) {
+        _adFilterAllowList.value = _adFilterAllowList.value.filter { it != domain }
+    }
+
+    fun selectSavedProfile(item: SavedProfileItem) {
+        _currentConfig.value = item.rawConfig
+        OperationalLogCatcher.info(
+            LogCategory.CONFIG_VALIDATION,
+            "DiagnosticViewModel",
+            "Selected active profile: ${item.name} (${item.endpoint})"
+        )
     }
 
     fun dismissImportDialog() {

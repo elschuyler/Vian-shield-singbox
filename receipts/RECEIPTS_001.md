@@ -449,7 +449,8 @@
   - Workspace security scan: silent scan confirmed zero committed credentials or unignored secrets.
   - Remote verification: pending next GitHub Actions run on push/dispatch.
 * **Any deviation from what was requested, and why:** None.
-* **Any known issue or follow-up needed:** Ready for GitHub export and CI workflow trigger. Note: `RECEIPTS_001.md` is now near the 500-line cap (~480 lines); next entry should transition to `RECEIPTS_002.md`.
+* **Any known issue or follow-up needed:** Ready for GitHub export and CI workflow trigger.
+* **Audit File Cap Notice:** RECEIPTS_001.md reached line limit threshold. File formally closed. All subsequent entries continue in /receipts/RECEIPTS_002.md.
 
 
 

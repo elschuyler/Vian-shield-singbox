@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.config.WireGuardConfigParser
 import com.example.engine.SingBoxAdapter
 import com.example.engine.SingBoxPlatformCallback
+import com.example.engine.SingBoxStorageManager
 import com.example.logging.CrashReporter
 import com.example.logging.LogCategory
 import com.example.logging.LogExporter
@@ -75,7 +76,9 @@ class VianshieldPhase1Test {
         assertTrue(root.has("dns"))
         assertTrue(root.has("inbounds"))
         assertTrue(root.has("endpoints"))
+        assertTrue(root.has("outbounds"))
         assertTrue(root.has("route"))
+        assertTrue(root.has("experimental"))
 
         val inbounds = root.getJSONArray("inbounds")
         val tun = inbounds.getJSONObject(0)
@@ -204,6 +207,12 @@ class VianshieldPhase1Test {
         val viewModel = DiagnosticViewModel(ApplicationProvider.getApplicationContext())
         assertEquals(AppScreen.MAIN, viewModel.currentScreen.value)
 
+        viewModel.navigateTo(AppScreen.FIREWALL)
+        assertEquals(AppScreen.FIREWALL, viewModel.currentScreen.value)
+
+        viewModel.navigateTo(AppScreen.VPN)
+        assertEquals(AppScreen.VPN, viewModel.currentScreen.value)
+
         viewModel.navigateTo(AppScreen.PROFILES)
         assertEquals(AppScreen.PROFILES, viewModel.currentScreen.value)
 
@@ -218,6 +227,40 @@ class VianshieldPhase1Test {
 
         viewModel.navigateTo(AppScreen.MAIN)
         assertEquals(AppScreen.MAIN, viewModel.currentScreen.value)
+    }
+
+    @Test
+    fun diagnosticViewModel_uiControlsStateManagement() {
+        val viewModel = DiagnosticViewModel(ApplicationProvider.getApplicationContext())
+
+        // Speed preset
+        assertEquals("Unlimited (Full Speed)", viewModel.speedPreset.value)
+        viewModel.setSpeedPreset("Gaming / Low Latency")
+        assertEquals("Gaming / Low Latency", viewModel.speedPreset.value)
+
+        // DNS provider
+        assertEquals("Profile Default (from .conf)", viewModel.dnsProvider.value)
+        viewModel.setDnsProvider("Cloudflare DNS (1.1.1.1)")
+        assertEquals("Cloudflare DNS (1.1.1.1)", viewModel.dnsProvider.value)
+
+        // Ad filter
+        assertFalse(viewModel.isAdFilterEnabled.value)
+        viewModel.setAdFilterEnabled(true)
+        assertTrue(viewModel.isAdFilterEnabled.value)
+
+        // Allow list
+        val initialSize = viewModel.adFilterAllowList.value.size
+        viewModel.addAllowListDomain("mycustomdomain.com")
+        assertEquals(initialSize + 1, viewModel.adFilterAllowList.value.size)
+        assertTrue(viewModel.adFilterAllowList.value.contains("mycustomdomain.com"))
+        viewModel.removeAllowListDomain("mycustomdomain.com")
+        assertEquals(initialSize, viewModel.adFilterAllowList.value.size)
+
+        // Saved profiles
+        assertTrue("Must contain default test profile", viewModel.savedProfiles.value.isNotEmpty())
+        val defaultProfile = viewModel.savedProfiles.value.first()
+        viewModel.selectSavedProfile(defaultProfile)
+        assertEquals(defaultProfile.rawConfig, viewModel.currentConfig.value)
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -356,5 +399,63 @@ class VianshieldPhase1Test {
         viewModel.dismissCrashReports()
         assertFalse("Pending crash reports must be false after dismissal", viewModel.hasPendingCrashReports.value)
         assertEquals(0, viewModel.pendingCrashCount.value)
+    }
+
+    @Test
+    fun singBoxStorageManager_prepareCacheStorage_createsDirectoryAndReturnsPath() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val result = SingBoxStorageManager.prepareCacheStorage(context)
+        assertTrue("Storage preparation must succeed", result.isSuccess)
+
+        val path = result.getOrThrow()
+        assertTrue("Path must end with cache.db", path.endsWith("cache.db"))
+        val file = File(path)
+        assertTrue("Parent directory must exist", file.parentFile?.exists() == true)
+        assertTrue("Parent directory must be writable", file.parentFile?.canWrite() == true)
+    }
+
+    @Test
+    fun singBoxStorageManager_zeroByteFile_cleanedUpDuringPrepare() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val cacheFile = SingBoxStorageManager.getCacheDbFile(context)
+        cacheFile.parentFile?.mkdirs()
+        cacheFile.writeBytes(ByteArray(0)) // Create 0-byte truncated file
+        assertEquals(0L, cacheFile.length())
+
+        val result = SingBoxStorageManager.prepareCacheStorage(context)
+        assertTrue("Storage preparation must succeed even with zero-byte corrupted file", result.isSuccess)
+        assertFalse("Zero-byte corrupt file must be deleted so bbolt can cleanly initialize", cacheFile.exists())
+    }
+
+    @Test
+    fun singBoxStorageManager_clearCacheFile_deletesOnlyCacheDb() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val cacheFile = SingBoxStorageManager.getCacheDbFile(context)
+        cacheFile.parentFile?.mkdirs()
+        cacheFile.writeText("test-cache-content")
+
+        // Create an unrelated file in app-private filesDir to ensure it is untouched
+        val unrelatedFile = File(context.filesDir, "unrelated_user_data.txt")
+        unrelatedFile.writeText("important-user-data")
+
+        val cleared = SingBoxStorageManager.clearCacheFile(context)
+        assertTrue("clearCacheFile must return true", cleared)
+        assertFalse("cache.db must be deleted", cacheFile.exists())
+        assertTrue("Unrelated app files must remain intact", unrelatedFile.exists())
+
+        unrelatedFile.delete()
+    }
+
+    @Test
+    fun singBoxStorageManager_getSafeCacheDiagnostics_hasExpectedFields() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        SingBoxStorageManager.prepareCacheStorage(context)
+        val diagnostics = SingBoxStorageManager.getSafeCacheDiagnostics(context)
+
+        assertTrue("Diagnostics must have Cache Path", diagnostics.containsKey("Cache Path"))
+        assertTrue("Diagnostics must have Directory Exists", diagnostics.containsKey("Directory Exists"))
+        assertTrue("Diagnostics must have Directory Writable", diagnostics.containsKey("Directory Writable"))
+        assertTrue("Diagnostics must have Storage Status", diagnostics.containsKey("Storage Status"))
+        assertTrue("Storage Status must indicate app-private storage", diagnostics["Storage Status"]?.contains("App-Private") == true)
     }
 }
