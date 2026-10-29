@@ -168,7 +168,7 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
                 startForeground(NOTIFICATION_ID, buildNotification("Starting Vianshield Tunnel…"))
 
                 // 5. Initialize engine adapter
-                _vpnState.value = VpnState.Starting("STAGE 3: Initializing native BoxService core")
+                _vpnState.value = VpnState.Starting("STAGE 3: Initializing native CommandServer core")
                 val initResult = singBoxEngine.initialize(singBoxJson, this@VianshieldVpnService)
                 if (initResult.isFailure) {
                     val err = initResult.exceptionOrNull()?.message ?: "Engine initialization failed"
@@ -183,7 +183,7 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
                 _vpnState.value = VpnState.Starting("STAGE 4: Starting sing-box routing core")
                 val engineStartResult = withTimeoutOrNull(10_000L) {
                     singBoxEngine.start()
-                } ?: Result.failure(IllegalStateException("sing-box BoxService start timed out after 10 seconds"))
+                } ?: Result.failure(IllegalStateException("sing-box CommandServer start timed out after 10 seconds"))
 
                 if (engineStartResult.isFailure) {
                     val err = engineStartResult.exceptionOrNull()?.message ?: "Engine start failed"
@@ -191,10 +191,6 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
                     _vpnState.value = VpnState.Error("ERR_ENGINE_START", err)
                     singBoxEngine.stop()
                     releaseTunFd()
-                    // If error involves cache database corruption, clear it to protect subsequent start attempts
-                    if (err.contains("cache", ignoreCase = true) || err.contains("bbolt", ignoreCase = true)) {
-                        SingBoxStorageManager.clearCacheFile(this@VianshieldVpnService)
-                    }
                     stopForegroundSafely()
                     stopSelfResult(startId)
                     return@withLock

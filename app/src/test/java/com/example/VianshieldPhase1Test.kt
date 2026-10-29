@@ -423,57 +423,34 @@ class VianshieldPhase1Test {
     }
 
     @Test
-    fun singBoxStorageManager_prepareCacheStorage_createsDirectoryAndReturnsPath() {
+    fun singBoxStorageManager_sandboxDirectories_createdAndWritable() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val result = SingBoxStorageManager.prepareCacheStorage(context)
-        assertTrue("Storage preparation must succeed", result.isSuccess)
+        val baseDir = SingBoxStorageManager.getBaseDir(context)
+        val workingDir = SingBoxStorageManager.getWorkingDir(context)
+        val tempDir = SingBoxStorageManager.getTempDir(context)
 
-        val path = result.getOrThrow()
-        assertTrue("Path must end with cache.db", path.endsWith("cache.db"))
-        val file = File(path)
-        assertTrue("Parent directory must exist", file.parentFile?.exists() == true)
-        assertTrue("Parent directory must be writable", file.parentFile?.canWrite() == true)
+        assertTrue("Base directory must exist", baseDir.exists())
+        assertTrue("Base directory must be writable", baseDir.canWrite())
+        assertTrue("Working directory must exist", workingDir.exists())
+        assertTrue("Temp directory must exist", tempDir.exists())
     }
 
     @Test
-    fun singBoxStorageManager_zeroByteFile_cleanedUpDuringPrepare() {
+    fun singBoxStorageManager_setupEnvironment_bootstrapsEngine() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val cacheFile = SingBoxStorageManager.getCacheDbFile(context)
-        cacheFile.parentFile?.mkdirs()
-        cacheFile.writeBytes(ByteArray(0)) // Create 0-byte truncated file
-        assertEquals(0L, cacheFile.length())
-
-        val result = SingBoxStorageManager.prepareCacheStorage(context)
-        assertTrue("Storage preparation must succeed even with zero-byte corrupted file", result.isSuccess)
-        assertFalse("Zero-byte corrupt file must be deleted so bbolt can cleanly initialize", cacheFile.exists())
+        val adapter = SingBoxAdapter(allowSimulationForTesting = true)
+        val result = SingBoxStorageManager.setupEnvironment(context, adapter)
+        assertTrue("setupEnvironment must succeed", result.isSuccess)
     }
 
     @Test
-    fun singBoxStorageManager_clearCacheFile_deletesOnlyCacheDb() {
+    fun singBoxStorageManager_getSafeStorageDiagnostics_hasExpectedFields() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val cacheFile = SingBoxStorageManager.getCacheDbFile(context)
-        cacheFile.parentFile?.mkdirs()
-        cacheFile.writeText("test-cache-content")
+        val diagnostics = SingBoxStorageManager.getSafeStorageDiagnostics(context)
 
-        // Create an unrelated file in app-private filesDir to ensure it is untouched
-        val unrelatedFile = File(context.filesDir, "unrelated_user_data.txt")
-        unrelatedFile.writeText("important-user-data")
-
-        val cleared = SingBoxStorageManager.clearCacheFile(context)
-        assertTrue("clearCacheFile must return true", cleared)
-        assertFalse("cache.db must be deleted", cacheFile.exists())
-        assertTrue("Unrelated app files must remain intact", unrelatedFile.exists())
-
-        unrelatedFile.delete()
-    }
-
-    @Test
-    fun singBoxStorageManager_getSafeCacheDiagnostics_hasExpectedFields() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        SingBoxStorageManager.prepareCacheStorage(context)
-        val diagnostics = SingBoxStorageManager.getSafeCacheDiagnostics(context)
-
-        assertTrue("Diagnostics must have Cache Path", diagnostics.containsKey("Cache Path"))
+        assertTrue("Diagnostics must have Base Dir", diagnostics.containsKey("Base Dir"))
+        assertTrue("Diagnostics must have Working Dir", diagnostics.containsKey("Working Dir"))
+        assertTrue("Diagnostics must have Temp Dir", diagnostics.containsKey("Temp Dir"))
         assertTrue("Diagnostics must have Directory Exists", diagnostics.containsKey("Directory Exists"))
         assertTrue("Diagnostics must have Directory Writable", diagnostics.containsKey("Directory Writable"))
         assertTrue("Diagnostics must have Storage Status", diagnostics.containsKey("Storage Status"))

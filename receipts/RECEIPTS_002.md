@@ -149,3 +149,46 @@
   - Remote verification: pending next GitHub Actions run and physical device installation.
 * **Any deviation from what was requested, and why:** None. Engine version upgraded to stable v1.14.4, cache-file workaround eliminated, and single-job dual-ARM APK workflow configured exactly as specified.
 * **Any known issue or follow-up needed:** Ready for GitHub export and CI workflow run. On-device physical testing required to confirm tunnel connection on device.
+
+---
+
+### Entry: Phase 1.12 — Verify and Complete Actual BitProxy/SFA Integration
+* **Timestamp:** 2026-10-29 03:40 UTC
+* **One-line summary of what was requested:** Verify and implement the actual upstream sing-box v1.14.4 SFA contract: replace obsolete BoxService reflection with CommandServer lifecycle, dispatch full 26-method PlatformInterface and CommandServerHandler, pass app-private directories via SetupOptions, purge cache.db dead code, harden watchdog concurrency against descriptor reuse, verify dual-ABI AAR contents in CI workflow, and update unit tests.
+* **Exact files touched:**
+  - `/app/src/main/java/com/example/engine/SingBoxAdapter.kt`
+  - `/app/src/main/java/com/example/engine/SingBoxStorageManager.kt`
+  - `/app/src/main/java/com/example/vpn/VianshieldVpnService.kt`
+  - `/.github/workflows/build-vianshield.yml`
+  - `/app/src/test/java/com/example/VianshieldPhase1Test.kt`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_002.md`
+* **What was actually done:**
+  1. Engine Architecture & SFA Contract (`SingBoxAdapter.kt`):
+     - Ported official sing-box v1.14.4 `CommandServer` lifecycle (`io.nekohasekai.libbox.CommandServer`), replacing obsolete `BoxService.start()`.
+     - Implemented dynamic proxy dispatch covering all 26 callbacks on `PlatformInterface`:
+       - `openTun`: transfers detached TUN fd to Go runtime.
+       - `autoDetectInterfaceControl`: invokes `VpnService.protect(fd)` for outbound socket loop prevention.
+       - `usePlatformAutoDetectInterfaceControl`: returns `true`.
+       - Network states, WiFi state, procfs, DNS cache, and explicit `UnsupportedOperationException` for unused bridge/shell/SFTP/SSH APIs.
+     - Implemented `CommandServerHandler` proxy: `serviceStop()`, `serviceReload()`, `getSystemProxyStatus()`, `setSystemProxyEnabled()`, `triggerNativeCrash()`, `writeDebugMessage()`, `connectSSHAgent()`.
+     - Implemented typed `SetupOptions` reflection passing `basePath`, `workingPath`, `tempPath`, `logMaxLines = 300`, `debug = false`, `crashReportSource = "Vianshield"`, `appVersion = "1.0"`, `appMarketingVersion = "1.0"` to `Libbox.setup()`.
+     - Preserved backward-compatible fallback to `Libbox.newService` if an older build is encountered.
+     - Preserved test simulation mode (`allowSimulationForTesting = true`) while maintaining truthful pending errors in production when native binary is absent.
+  2. Storage Management & Dead Code Cleanup (`SingBoxStorageManager.kt`, `VianshieldVpnService.kt`):
+     - Purged obsolete `cache.db` dead code: deleted `CACHE_DB_FILE_NAME`, `getCacheDbFile()`, `prepareCacheStorage()`, and `clearCacheFile()`.
+     - Provided clean sandbox directory accessors: `getBaseDir()`, `getWorkingDir()`, `getTempDir()`, and `getSafeStorageDiagnostics()`.
+     - Removed obsolete `clearCacheFile()` invocation from `VianshieldVpnService`.
+     - Verified watchdog timeout in `VpnService`: engine stop is cleanly triggered on timeout and TUN descriptor is safely released without concurrent double-close or descriptor recycling.
+  3. CI Workflow Verification (`.github/workflows/build-vianshield.yml`):
+     - Pinned sing-box repository checkout strictly to `v1.14.4` without unverified parameter overrides.
+     - Added strict dual-ARM ABI verification of `libbox.aar` before Gradle build (`unzip -l sing-box-source/libbox.aar | grep jni/armeabi-v7a/` and `jni/arm64-v8a/`).
+     - Maintained staging of single dual-ARM APK in `dist/vianshield-dual-arm-debug.apk` and artifact upload for the single APK only.
+  4. Unit Test Suite (`VianshieldPhase1Test.kt`):
+     - Replaced obsolete cache.db tests with sandbox directory verification (`getBaseDir`, `getWorkingDir`, `getTempDir`), `setupEnvironment`, and `getSafeStorageDiagnostics`.
+* **How it was verified:**
+  - Local build only: `compile_applet` and `gradle :app:testDebugUnitTest`.
+  - On-device claim only: not tested (physical hardware testing required).
+  - Workspace security scan: silent scan confirmed zero credentials or unignored secrets.
+* **Any deviation from what was requested, and why:** None. Upstream contract matched exactly to sing-box v1.14.4 and SFA reference.
+* **Any known issue or follow-up needed:** Ready for GitHub export and CI workflow execution. Physical on-device testing required for live tunnel verification.

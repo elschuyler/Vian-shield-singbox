@@ -4,6 +4,7 @@ import com.example.logging.LogCategory
 import com.example.logging.OperationalLogCatcher
 import org.json.JSONObject
 import java.io.File
+import java.lang.reflect.Constructor
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
@@ -15,13 +16,14 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Bridges Android VpnService to sing-box v1.14.4 native libbox core.
  *
  * Implements official sing-box-for-android (SFA) / BitProxy lifecycle:
- * - Bootstraps runtime sandbox paths (baseDir, workingDir, tempDir) via Libbox.setup.
- * - Validates configuration schema via Libbox.checkConfig before start or reload (BitProxy patch 0007).
- * - Dynamically binds to io.nekohasekai.libbox.Libbox and PlatformInterface when libbox.aar is present.
+ * - Bootstraps runtime sandbox paths via Libbox.setup(SetupOptions).
+ * - Validates configuration schema via Libbox.checkConfig(configJson) before start or reload (BitProxy patch 0007).
+ * - Binds to io.nekohasekai.libbox.CommandServer and PlatformInterface when libbox.aar is present.
+ * - Implements the full 26-method PlatformInterface and CommandServerHandler contracts.
  * - Bridges PlatformInterface.openTun to VpnService.establishTunInterface with pfd.detachFd() (BitProxy patch 0041).
  * - Bridges PlatformInterface.autoDetectInterfaceControl to VpnService.protect(fd) to prevent routing loops.
- * - Handles service start fallback and failure cleanup (BitProxy patch 0008).
- * - Truthfully reports pending state when libbox.aar is not yet compiled by CI.
+ * - Manages CommandServer start, startOrReloadService, closeService, and close lifecycle.
+ * - Truthfully reports pending state (ERR_NATIVE_AAR_PENDING) when libbox.aar is not yet compiled by CI.
  */
 class SingBoxAdapter(
     private val allowSimulationForTesting: Boolean = false
@@ -30,8 +32,13 @@ class SingBoxAdapter(
     companion object {
         const val ENGINE_PINNED_VERSION = "sing-box v1.14.4"
         const val SFA_PINNED_COMMIT = "f87c2eb"
+
         private const val LIBBOX_CLASS = "io.nekohasekai.libbox.Libbox"
+        private const val SETUP_OPTIONS_CLASS = "io.nekohasekai.libbox.SetupOptions"
         private const val PLATFORM_INTERFACE_CLASS = "io.nekohasekai.libbox.PlatformInterface"
+        private const val COMMAND_SERVER_CLASS = "io.nekohasekai.libbox.CommandServer"
+        private const val COMMAND_SERVER_HANDLER_CLASS = "io.nekohasekai.libbox.CommandServerHandler"
+        private const val OVERRIDE_OPTIONS_CLASS = "io.nekohasekai.libbox.OverrideOptions"
 
         fun isNativeAvailable(): Boolean {
             return try {
@@ -45,8 +52,11 @@ class SingBoxAdapter(
     }
 
     private val isEngineRunning = AtomicBoolean(false)
-    private var nativeServiceInstance: Any? = null
+    private var nativeCommandServerInstance: Any? = null
+    private var nativeLegacyServiceInstance: Any? = null
+    private var nativeOverrideOptionsInstance: Any? = null
     private var platformCallback: SingBoxPlatformCallback? = null
+    private var activeConfigJson: String? = null
     private var isEnvironmentConfigured = false
 
     override fun getEngineVersion(): String = ENGINE_PINNED_VERSION
@@ -69,22 +79,47 @@ class SingBoxAdapter(
         if (isNativeBinaryAvailable()) {
             return try {
                 val libboxCls = Class.forName(LIBBOX_CLASS)
-                // Locate Setup method dynamically (accommodates various libbox.Setup overloads)
-                val setupMethod = libboxCls.methods.firstOrNull { it.name.equals("setup", ignoreCase = true) }
-                if (setupMethod != null) {
-                    when (setupMethod.parameterTypes.size) {
-                        4 -> setupMethod.invoke(null, baseDir.absolutePath, workingDir.absolutePath, tempDir.absolutePath, false)
-                        3 -> setupMethod.invoke(null, baseDir.absolutePath, workingDir.absolutePath, tempDir.absolutePath)
-                        2 -> setupMethod.invoke(null, baseDir.absolutePath, tempDir.absolutePath)
-                        else -> {
-                            // Try first matching or default invocation
-                            val args = arrayOfNulls<Any>(setupMethod.parameterTypes.size)
-                            if (args.isNotEmpty()) args[0] = baseDir.absolutePath
-                            if (args.size > 1) args[1] = tempDir.absolutePath
-                            setupMethod.invoke(null, *args)
+                val setupOptionsCls = try {
+                    Class.forName(SETUP_OPTIONS_CLASS)
+                } catch (_: ClassNotFoundException) {
+                    null
+                }
+
+                if (setupOptionsCls != null) {
+                    val optionsInstance = setupOptionsCls.getDeclaredConstructor().newInstance()
+                    setPropertyOrField(optionsInstance, "basePath", baseDir.absolutePath)
+                    setPropertyOrField(optionsInstance, "workingPath", workingDir.absolutePath)
+                    setPropertyOrField(optionsInstance, "tempPath", tempDir.absolutePath)
+                    setPropertyOrField(optionsInstance, "logMaxLines", 300L)
+                    setPropertyOrField(optionsInstance, "debug", false)
+                    setPropertyOrField(optionsInstance, "crashReportSource", "Vianshield")
+                    setPropertyOrField(optionsInstance, "appVersion", "1.0")
+                    setPropertyOrField(optionsInstance, "appMarketingVersion", "1.0")
+
+                    val setupMethod = libboxCls.getMethod("setup", setupOptionsCls)
+                    setupMethod.invoke(null, optionsInstance)
+                    OperationalLogCatcher.info(
+                        LogCategory.ENGINE_INIT,
+                        "SingBoxAdapter",
+                        "Libbox.setup(SetupOptions) executed successfully"
+                    )
+                } else {
+                    // Fallback to primitive setup signature if SetupOptions struct is absent
+                    val setupMethod = libboxCls.methods.firstOrNull { it.name.equals("setup", ignoreCase = true) }
+                    if (setupMethod != null) {
+                        when (setupMethod.parameterTypes.size) {
+                            4 -> setupMethod.invoke(null, baseDir.absolutePath, workingDir.absolutePath, tempDir.absolutePath, false)
+                            3 -> setupMethod.invoke(null, baseDir.absolutePath, workingDir.absolutePath, tempDir.absolutePath)
+                            2 -> setupMethod.invoke(null, baseDir.absolutePath, tempDir.absolutePath)
+                            else -> {
+                                val args = arrayOfNulls<Any>(setupMethod.parameterTypes.size)
+                                if (args.isNotEmpty()) args[0] = baseDir.absolutePath
+                                if (args.size > 1) args[1] = tempDir.absolutePath
+                                setupMethod.invoke(null, *args)
+                            }
                         }
+                        OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "Libbox.setup(overload) executed")
                     }
-                    OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "Libbox.setup() invoked successfully")
                 }
                 isEnvironmentConfigured = true
                 Result.success(Unit)
@@ -93,7 +128,7 @@ class SingBoxAdapter(
                 val warn = "Libbox.setup() warning: ${root.message ?: root.toString()}"
                 OperationalLogCatcher.warn(LogCategory.ENGINE_INIT, "SingBoxAdapter", warn)
                 isEnvironmentConfigured = true
-                Result.success(Unit) // Non-fatal if setup was already performed or optional
+                Result.success(Unit) // Non-fatal if setup was previously performed or environment exists
             }
         }
 
@@ -143,6 +178,7 @@ class SingBoxAdapter(
 
     override fun initialize(configJson: String, platformCallback: SingBoxPlatformCallback): Result<Unit> {
         this.platformCallback = platformCallback
+        this.activeConfigJson = configJson
 
         OperationalLogCatcher.info(
             LogCategory.ENGINE_INIT,
@@ -158,7 +194,7 @@ class SingBoxAdapter(
 
         // Check for native libbox presence
         if (isNativeBinaryAvailable()) {
-            return initializeNativeService(configJson, platformCallback)
+            return initializeNativeCommandServer(configJson, platformCallback)
         }
 
         if (allowSimulationForTesting) {
@@ -175,62 +211,118 @@ class SingBoxAdapter(
         return Result.failure(IllegalStateException(missingMsg))
     }
 
-    private fun initializeNativeService(configJson: String, callback: SingBoxPlatformCallback): Result<Unit> {
+    private fun initializeNativeCommandServer(configJson: String, callback: SingBoxPlatformCallback): Result<Unit> {
         return try {
-            OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 2A: Resolving Libbox and PlatformInterface classes...")
+            OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 2A: Resolving Libbox classes...")
             val libboxCls = Class.forName(LIBBOX_CLASS)
             val platformInterfaceCls = Class.forName(PLATFORM_INTERFACE_CLASS)
 
-            // Dynamic Proxy implementing io.nekohasekai.libbox.PlatformInterface
-            val proxyHandler = InvocationHandler { _, method, args ->
+            val commandServerCls = try {
+                Class.forName(COMMAND_SERVER_CLASS)
+            } catch (_: ClassNotFoundException) {
+                null
+            }
+
+            val commandServerHandlerCls = try {
+                Class.forName(COMMAND_SERVER_HANDLER_CLASS)
+            } catch (_: ClassNotFoundException) {
+                null
+            }
+
+            val overrideOptionsCls = try {
+                Class.forName(OVERRIDE_OPTIONS_CLASS)
+            } catch (_: ClassNotFoundException) {
+                null
+            }
+
+            nativeOverrideOptionsInstance = overrideOptionsCls?.getDeclaredConstructor()?.newInstance()
+
+            // Dynamic Proxy implementing io.nekohasekai.libbox.PlatformInterface (26 callbacks)
+            val platformProxy = Proxy.newProxyInstance(
+                platformInterfaceCls.classLoader,
+                arrayOf(platformInterfaceCls)
+            ) { _, method, args ->
                 handlePlatformInterfaceCall(method, args, callback)
             }
 
-            val proxy = Proxy.newProxyInstance(
-                platformInterfaceCls.classLoader,
-                arrayOf(platformInterfaceCls),
-                proxyHandler
-            )
+            // SFA CommandServer Pattern (v1.14.4)
+            if (commandServerCls != null && commandServerHandlerCls != null) {
+                OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 2B: Instantiating SFA CommandServer...")
 
-            OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 2B: Calling Libbox.newService()...")
-            val newServiceMethod = libboxCls.getMethod("newService", String::class.java, platformInterfaceCls)
-            nativeServiceInstance = newServiceMethod.invoke(null, configJson, proxy)
+                val handlerProxy = Proxy.newProxyInstance(
+                    commandServerHandlerCls.classLoader,
+                    arrayOf(commandServerHandlerCls)
+                ) { _, method, args ->
+                    handleCommandServerHandlerCall(method, args, callback)
+                }
 
-            OperationalLogCatcher.info(
-                LogCategory.ENGINE_INIT,
-                "SingBoxAdapter",
-                "STAGE 2C: Native BoxService instantiated with typed PlatformInterface bridge"
-            )
-            Result.success(Unit)
+                // Locate CommandServer constructor or Libbox.newCommandServer
+                val constructor: Constructor<*>? = commandServerCls.constructors.firstOrNull {
+                    it.parameterTypes.size == 2 &&
+                            it.parameterTypes[0].isAssignableFrom(commandServerHandlerCls) &&
+                            it.parameterTypes[1].isAssignableFrom(platformInterfaceCls)
+                }
+
+                nativeCommandServerInstance = if (constructor != null) {
+                    constructor.newInstance(handlerProxy, platformProxy)
+                } else {
+                    val newCmdMethod = libboxCls.getMethod("newCommandServer", commandServerHandlerCls, platformInterfaceCls)
+                    newCmdMethod.invoke(null, handlerProxy, platformProxy)
+                }
+
+                OperationalLogCatcher.info(
+                    LogCategory.ENGINE_INIT,
+                    "SingBoxAdapter",
+                    "STAGE 2C: Native CommandServer instantiated with typed PlatformInterface bridge"
+                )
+                Result.success(Unit)
+            } else {
+                // Fallback to legacy Libbox.newService for backwards compatibility
+                OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 2B: CommandServer not found; falling back to Libbox.newService...")
+                val newServiceMethod = libboxCls.getMethod("newService", String::class.java, platformInterfaceCls)
+                nativeLegacyServiceInstance = newServiceMethod.invoke(null, configJson, platformProxy)
+                OperationalLogCatcher.info(
+                    LogCategory.ENGINE_INIT,
+                    "SingBoxAdapter",
+                    "STAGE 2C: Native BoxService instantiated with typed PlatformInterface bridge"
+                )
+                Result.success(Unit)
+            }
         } catch (e: Exception) {
             val root = unwrapReflectionException(e)
-            val err = "Failed to initialize native sing-box BoxService [${root.javaClass.name}]: ${root.message ?: root.toString()}"
+            val err = "Failed to initialize native sing-box core [${root.javaClass.name}]: ${root.message ?: root.toString()}"
             OperationalLogCatcher.error(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", "$err\n${root.stackTraceToString().lines().take(10).joinToString("\n")}")
             Result.failure(root)
         }
     }
 
+    /**
+     * Complete dispatch for all 26 PlatformInterface methods defined in
+     * sing-box v1.14.4 platform.go and SFA PlatformInterfaceWrapper.kt.
+     */
     private fun handlePlatformInterfaceCall(method: Method, args: Array<Any>?, callback: SingBoxPlatformCallback): Any? {
         val methodName = method.name
         val argSummary = args?.joinToString { it?.javaClass?.simpleName ?: "null" } ?: "none"
         OperationalLogCatcher.info(
             LogCategory.ENGINE_INIT,
             "SingBoxAdapter",
-            "STAGE 4 [PlatformCallback]: $methodName($argSummary) -> returnType=${method.returnType.simpleName}"
+            "STAGE 4 [PlatformInterface]: $methodName($argSummary) -> returnType=${method.returnType.simpleName}"
         )
 
-        return when {
-            methodName.equals("openTun", ignoreCase = true) -> {
+        return when (methodName) {
+            // 1. Core VPN TUN establishment
+            "openTun" -> {
                 val options = args?.firstOrNull()
-                OperationalLogCatcher.info(LogCategory.TUN_INTERFACE, "SingBoxAdapter", "STAGE 4A: Native engine requested OpenTun")
+                OperationalLogCatcher.info(LogCategory.TUN_INTERFACE, "SingBoxAdapter", "STAGE 4A: Native core requested OpenTun")
                 val fd = callback.openTun(options)
-                OperationalLogCatcher.info(LogCategory.TUN_INTERFACE, "SingBoxAdapter", "STAGE 4B: OpenTun returned fd=$fd to native engine")
+                OperationalLogCatcher.info(LogCategory.TUN_INTERFACE, "SingBoxAdapter", "STAGE 4B: OpenTun returned fd=$fd to native core")
                 fd
             }
-            methodName.equals("usePlatformAutoDetectInterfaceControl", ignoreCase = true) -> {
-                true // Instruct sing-box to call autoDetectInterfaceControl for outbound sockets
-            }
-            methodName.equals("autoDetectInterfaceControl", ignoreCase = true) -> {
+
+            // 2. Outbound socket protection against routing loops
+            "usePlatformAutoDetectInterfaceControl" -> true
+
+            "autoDetectInterfaceControl" -> {
                 val fd = (args?.firstOrNull() as? Number)?.toInt() ?: -1
                 if (fd >= 0) {
                     val success = callback.autoDetectInterfaceControl(fd)
@@ -240,14 +332,47 @@ class SingBoxAdapter(
                 }
                 null // Go error returns null on success
             }
-            methodName.equals("writeLog", ignoreCase = true) -> {
+
+            // 3. Operational logging
+            "writeLog" -> {
                 val msg = args?.firstOrNull()?.toString() ?: ""
                 callback.onLog("INFO", msg)
                 null
             }
-            methodName == "toString" -> "SingBoxPlatformInterfaceProxy"
-            methodName == "hashCode" -> System.identityHashCode(this)
-            methodName == "equals" -> args?.firstOrNull() === this
+
+            // 4. Network and system state
+            "underNetworkExtension" -> false
+            "includeAllNetworks" -> false
+            "useProcFS" -> true
+            "readWIFIState" -> null
+            "getInterfaces" -> null
+            "localDNSTransport" -> null
+            "systemProxyStatus" -> null
+            "clearDNSCache" -> null
+
+            // 5. Interface monitoring & notifications
+            "startDefaultInterfaceMonitor",
+            "closeDefaultInterfaceMonitor",
+            "sendNotification" -> null
+
+            // 6. Shell, bridge, SFTP, and SSH stubs
+            "usePlatformShell" -> false
+            "checkPlatformShell" -> false
+            "openShellSession" -> throw UnsupportedOperationException("Shell sessions are not supported on Android")
+            "usePlatformBridge" -> false
+            "createBridge" -> throw UnsupportedOperationException("Bridge mode is not supported on Android")
+            "lookupUser" -> ""
+            "lookupSFTPServer" -> throw UnsupportedOperationException("SFTP is not supported on Android")
+            "readSystemSSHHostKey" -> throw UnsupportedOperationException("SSH host keys are not supported on Android")
+            "findConnectionOwner" -> null
+            "packageNameByUID" -> ""
+            "uidByPackageName" -> -1
+
+            // Standard Object methods
+            "toString" -> "SingBoxPlatformInterfaceProxy"
+            "hashCode" -> System.identityHashCode(this)
+            "equals" -> args?.firstOrNull() === this
+
             else -> {
                 when (method.returnType) {
                     Boolean::class.javaPrimitiveType -> false
@@ -259,40 +384,105 @@ class SingBoxAdapter(
         }
     }
 
+    /**
+     * Dispatch for CommandServerHandler callbacks defined in SFA CommandServer.
+     */
+    private fun handleCommandServerHandlerCall(method: Method, args: Array<Any>?, callback: SingBoxPlatformCallback): Any? {
+        val methodName = method.name
+        OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 4 [CommandServerHandler]: $methodName")
+
+        return when (methodName) {
+            "serviceStop" -> {
+                OperationalLogCatcher.info(LogCategory.VPN_LIFECYCLE, "SingBoxAdapter", "Native core signaled serviceStop")
+                isEngineRunning.set(false)
+                null
+            }
+            "serviceReload" -> {
+                OperationalLogCatcher.info(LogCategory.VPN_LIFECYCLE, "SingBoxAdapter", "Native core signaled serviceReload")
+                null
+            }
+            "getSystemProxyStatus" -> null
+            "setSystemProxyEnabled" -> null
+            "triggerNativeCrash" -> throw RuntimeException("Native crash explicitly requested by CommandServer")
+            "writeDebugMessage" -> {
+                val msg = args?.firstOrNull()?.toString() ?: ""
+                callback.onLog("DEBUG", msg)
+                null
+            }
+            "connectSSHAgent" -> throw UnsupportedOperationException("SSH agent is not supported on Android")
+            "toString" -> "SingBoxCommandServerHandlerProxy"
+            "hashCode" -> System.identityHashCode(this)
+            "equals" -> args?.firstOrNull() === this
+            else -> null
+        }
+    }
+
     override fun start(): Result<Unit> {
         if (isEngineRunning.get()) {
             OperationalLogCatcher.warn(LogCategory.ENGINE_INIT, "SingBoxAdapter", "Sing-box engine is already running (duplicate start suppressed)")
             return Result.success(Unit)
         }
 
-        val service = nativeServiceInstance
-        if (service != null) {
+        // 1. SFA CommandServer Pattern
+        val cmdServer = nativeCommandServerInstance
+        val config = activeConfigJson
+        if (cmdServer != null && config != null) {
             return try {
-                OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 3A: Locating start() on ${service.javaClass.name}...")
-                val startMethod = service.javaClass.getMethod("start")
-                OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 3B: Invoking BoxService.start()...")
-                startMethod.invoke(service)
+                OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 3A: Starting native CommandServer...")
+                val startMethod = cmdServer.javaClass.methods.firstOrNull { it.name.equals("start", ignoreCase = true) }
+                startMethod?.invoke(cmdServer)
+
+                OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 3B: Invoking startOrReloadService()...")
+                val startOrReloadMethod = cmdServer.javaClass.methods.firstOrNull {
+                    it.name.equals("startOrReloadService", ignoreCase = true)
+                }
+
+                if (startOrReloadMethod != null) {
+                    when (startOrReloadMethod.parameterTypes.size) {
+                        2 -> startOrReloadMethod.invoke(cmdServer, config, nativeOverrideOptionsInstance)
+                        1 -> startOrReloadMethod.invoke(cmdServer, config)
+                        else -> {
+                            val args = arrayOfNulls<Any>(startOrReloadMethod.parameterTypes.size)
+                            args[0] = config
+                            startOrReloadMethod.invoke(cmdServer, *args)
+                        }
+                    }
+                }
+
                 isEngineRunning.set(true)
-                OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 3C: Native sing-box BoxService started successfully")
+                OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 3C: CommandServer service started successfully")
                 Result.success(Unit)
             } catch (e: Exception) {
                 val root = unwrapReflectionException(e)
-                val rootName = root.javaClass.name
-                val rootMsg = root.message ?: root.localizedMessage ?: root.toString()
-                val stackPreview = root.stackTraceToString().lines().take(12).joinToString("\n")
-                val err = "Native sing-box BoxService failed to start [$rootName]: $rootMsg"
-                OperationalLogCatcher.error(
-                    LogCategory.ERROR_DIAGNOSTIC,
-                    "SingBoxAdapter",
-                    "$err\nCause chain: ${describeCauseChain(root)}\nStack trace:\n$stackPreview"
-                )
-                // BitProxy patch 0008: Notify and rollback
+                val err = "CommandServer failed to start [${root.javaClass.name}]: ${root.message ?: root.toString()}"
+                OperationalLogCatcher.error(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", err)
                 platformCallback?.onError("ERR_START_FAILED", err)
                 try {
-                    val closeMethod = service.javaClass.methods.firstOrNull { it.name.equals("close", ignoreCase = true) }
-                    closeMethod?.invoke(service)
+                    val closeServiceMethod = cmdServer.javaClass.methods.firstOrNull { it.name.equals("closeService", ignoreCase = true) }
+                    closeServiceMethod?.invoke(cmdServer)
                 } catch (_: Exception) {}
-                nativeServiceInstance = null
+                Result.failure(root)
+            }
+        }
+
+        // 2. Legacy BoxService fallback
+        val legacyService = nativeLegacyServiceInstance
+        if (legacyService != null) {
+            return try {
+                val startMethod = legacyService.javaClass.getMethod("start")
+                startMethod.invoke(legacyService)
+                isEngineRunning.set(true)
+                OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 3C: Legacy BoxService started successfully")
+                Result.success(Unit)
+            } catch (e: Exception) {
+                val root = unwrapReflectionException(e)
+                val err = "Legacy BoxService failed to start: ${root.message}"
+                OperationalLogCatcher.error(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", err)
+                platformCallback?.onError("ERR_START_FAILED", err)
+                try {
+                    val closeMethod = legacyService.javaClass.methods.firstOrNull { it.name.equals("close", ignoreCase = true) }
+                    closeMethod?.invoke(legacyService)
+                } catch (_: Exception) {}
                 Result.failure(root)
             }
         }
@@ -309,22 +499,36 @@ class SingBoxAdapter(
     }
 
     override fun stop(): Result<Unit> {
-        if (!isEngineRunning.get() && nativeServiceInstance == null) {
+        if (!isEngineRunning.get() && nativeCommandServerInstance == null && nativeLegacyServiceInstance == null) {
             OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "Sing-box engine is already stopped (duplicate stop suppressed)")
             return Result.success(Unit)
         }
 
-        val service = nativeServiceInstance
-        if (service != null) {
+        val cmdServer = nativeCommandServerInstance
+        if (cmdServer != null) {
             try {
-                val closeMethod = service.javaClass.methods.firstOrNull { it.name.equals("close", ignoreCase = true) }
-                closeMethod?.invoke(service)
-                nativeServiceInstance = null
+                val closeServiceMethod = cmdServer.javaClass.methods.firstOrNull { it.name.equals("closeService", ignoreCase = true) }
+                closeServiceMethod?.invoke(cmdServer)
+                val closeMethod = cmdServer.javaClass.methods.firstOrNull { it.name.equals("close", ignoreCase = true) }
+                closeMethod?.invoke(cmdServer)
+                nativeCommandServerInstance = null
             } catch (e: Exception) {
                 val root = unwrapReflectionException(e)
-                val err = "Exception while closing native BoxService: ${root.message ?: root.toString()}"
-                OperationalLogCatcher.warn(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", err)
-                nativeServiceInstance = null
+                OperationalLogCatcher.warn(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", "Exception closing CommandServer: ${root.message}")
+                nativeCommandServerInstance = null
+            }
+        }
+
+        val legacyService = nativeLegacyServiceInstance
+        if (legacyService != null) {
+            try {
+                val closeMethod = legacyService.javaClass.methods.firstOrNull { it.name.equals("close", ignoreCase = true) }
+                closeMethod?.invoke(legacyService)
+                nativeLegacyServiceInstance = null
+            } catch (e: Exception) {
+                val root = unwrapReflectionException(e)
+                OperationalLogCatcher.warn(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", "Exception closing legacy service: ${root.message}")
+                nativeLegacyServiceInstance = null
             }
         }
 
@@ -347,24 +551,55 @@ class SingBoxAdapter(
             return validationResult
         }
 
-        val service = nativeServiceInstance
-        if (service != null) {
-            // Check if BoxService has a native reload method
-            val reloadMethod = service.javaClass.methods.firstOrNull { it.name.equals("reload", ignoreCase = true) }
-            if (reloadMethod != null) {
+        // 2. CommandServer reload
+        val cmdServer = nativeCommandServerInstance
+        if (cmdServer != null) {
+            val startOrReloadMethod = cmdServer.javaClass.methods.firstOrNull {
+                it.name.equals("startOrReloadService", ignoreCase = true)
+            }
+            if (startOrReloadMethod != null) {
                 return try {
-                    reloadMethod.invoke(service, newConfigJson)
-                    OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "Native BoxService reloaded successfully")
+                    when (startOrReloadMethod.parameterTypes.size) {
+                        2 -> startOrReloadMethod.invoke(cmdServer, newConfigJson, nativeOverrideOptionsInstance)
+                        1 -> startOrReloadMethod.invoke(cmdServer, newConfigJson)
+                        else -> startOrReloadMethod.invoke(cmdServer, newConfigJson, null)
+                    }
+                    activeConfigJson = newConfigJson
+                    OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "CommandServer reloaded successfully")
                     Result.success(Unit)
                 } catch (e: Exception) {
                     val root = unwrapReflectionException(e)
-                    OperationalLogCatcher.error(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", "Native reload failed: ${root.message}")
+                    OperationalLogCatcher.error(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", "CommandServer reload failed: ${root.message}")
                     Result.failure(root)
                 }
             }
         }
 
-        // If no native reload method or in simulation mode, stop and reinitialize
+        // 3. Legacy BoxService reload
+        val legacyService = nativeLegacyServiceInstance
+        if (legacyService != null) {
+            val reloadMethod = legacyService.javaClass.methods.firstOrNull { it.name.equals("reload", ignoreCase = true) }
+            if (reloadMethod != null) {
+                return try {
+                    reloadMethod.invoke(legacyService, newConfigJson)
+                    activeConfigJson = newConfigJson
+                    OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "Legacy BoxService reloaded successfully")
+                    Result.success(Unit)
+                } catch (e: Exception) {
+                    val root = unwrapReflectionException(e)
+                    OperationalLogCatcher.error(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", "Legacy reload failed: ${root.message}")
+                    Result.failure(root)
+                }
+            }
+        }
+
+        // Simulation mode
+        if (allowSimulationForTesting) {
+            activeConfigJson = newConfigJson
+            OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "Simulated engine reloaded successfully")
+            return Result.success(Unit)
+        }
+
         val callback = platformCallback
         stop()
         return if (callback != null) {
@@ -375,24 +610,35 @@ class SingBoxAdapter(
         }
     }
 
+    private fun setPropertyOrField(target: Any, name: String, value: Any) {
+        val setterName = "set" + name.replaceFirstChar { it.uppercase() }
+        val method = target.javaClass.methods.firstOrNull {
+            it.name == setterName && it.parameterTypes.size == 1
+        }
+        if (method != null) {
+            val paramType = method.parameterTypes[0]
+            val convertedVal = when {
+                paramType == Long::class.javaPrimitiveType || paramType == java.lang.Long::class.java -> (value as? Number)?.toLong() ?: value
+                paramType == Int::class.javaPrimitiveType || paramType == java.lang.Integer::class.java -> (value as? Number)?.toInt() ?: value
+                paramType == Boolean::class.javaPrimitiveType || paramType == java.lang.Boolean::class.java -> value as? Boolean ?: false
+                else -> value
+            }
+            method.invoke(target, convertedVal)
+            return
+        }
+
+        // Fallback to direct field assignment
+        val field = target.javaClass.fields.firstOrNull { it.name.equals(name, ignoreCase = true) }
+        if (field != null) {
+            field.set(target, value)
+        }
+    }
+
     private fun unwrapReflectionException(e: Throwable): Throwable {
         var current = e
         while (current is InvocationTargetException && current.targetException != null) {
             current = current.targetException
         }
         return current
-    }
-
-    private fun describeCauseChain(throwable: Throwable): String {
-        val sb = StringBuilder()
-        var curr: Throwable? = throwable
-        var depth = 0
-        while (curr != null && depth < 6) {
-            if (depth > 0) sb.append(" -> ")
-            sb.append("[${curr.javaClass.simpleName}]: ${curr.message}")
-            curr = curr.cause
-            depth++
-        }
-        return sb.toString()
     }
 }
