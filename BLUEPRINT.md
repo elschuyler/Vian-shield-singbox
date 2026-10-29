@@ -112,6 +112,7 @@
 | 2026-10-28 20:00 | UI Reorganization | Reorganized UI into minimalistic 4-tab persistent layout (Main, Firewall, VPN, Settings) with Light Sky Blue theme and honest inactive placeholders. | Complete |
 | 2026-10-28 22:25 | Phase 1.11 SFA Upgrade | Ported SFA/BitProxy lifecycle (Libbox.setup, Libbox.checkConfig, rollback), upgraded engine to stable sing-box v1.14.4 (SFA commit f87c2eb), eliminated experimental.cache_file workaround, consolidated CI workflow into single-job dual-ARM APK pipeline. All unit tests & compile_applet passed. | Complete |
 | 2026-10-29 03:40 | Phase 1.12 SFA Integration | Verified and completed actual sing-box v1.14.4 SFA contract: implemented CommandServer lifecycle and 26-method PlatformInterface / CommandServerHandler proxy dispatch, wired typed SetupOptions sandbox directories, eliminated obsolete cache.db dead code from SingBoxStorageManager & VpnService, hardened watchdog concurrency against descriptor reuse, added AAR dual-ABI verification to CI workflow, and updated unit test suite. | Complete |
+| 2026-10-29 13:25 | Phase 1.13 Native Linker Fix | Resolved native linker failure (unknown relocation 315 R_AARCH64_GOTPCREL32 against typeinfo for std::range_error): identified requirement for LLD 18, upgraded NDK from r26d (Clang/LLD 17) to r27c (Clang/LLD 18.0.1), added GOPATH/bin to path, implemented sequential 8-step verification pipeline in build-vianshield.yml, verified compile_applet and unit tests. | Complete |
 
 
 

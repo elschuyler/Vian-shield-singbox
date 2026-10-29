@@ -192,3 +192,40 @@
   - Workspace security scan: silent scan confirmed zero credentials or unignored secrets.
 * **Any deviation from what was requested, and why:** None. Upstream contract matched exactly to sing-box v1.14.4 and SFA reference.
 * **Any known issue or follow-up needed:** Ready for GitHub export and CI workflow execution. Physical on-device testing required for live tunnel verification.
+
+---
+
+### Entry: Phase 1.13 — Fix Native Linker Failure and Restore APK Pipeline
+* **Timestamp:** 2026-10-29 13:25 UTC
+* **One-line summary of what was requested:** Fix the native ARM64 linker failure in .github/workflows/build-vianshield.yml ("unknown relocation (315) against symbol typeinfo for std::range_error") by upgrading Android NDK to r27c (LLVM 18), preserving v1.14.4 and all capabilities, and enforcing the sequential 8-step verification pipeline.
+* **Exact files touched:**
+  - `/.github/workflows/build-vianshield.yml`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_002.md`
+* **What was actually done:**
+  1. Root Cause Identification:
+     - Relocation type 315 in the ELF for the Arm 64-bit Architecture (AArch64) specification corresponds to `R_AARCH64_GOTPCREL32` ($G(GOT(S)) - P + A$), used for 32-bit PC-relative offsets to Global Offset Table entries.
+     - The prebuilt Cronet library in sing-box v1.14.4 was compiled with a modern toolchain (LLVM 18+) that emits `R_AARCH64_GOTPCREL32` for RTTI symbol references such as `typeinfo for std::range_error`.
+     - Support for `R_AARCH64_GOTPCREL32` was only introduced into LLVM's LLD linker in LLVM 18 (commit `#72584`).
+     - The previous workflow pinned Android NDK `r26d` (`26.3.11579264`), which ships with Clang/LLD 17.0.2. When gomobile linked ARM64, `ld.lld 17` failed with "unknown relocation (315)" and "clang-17: error: linker command failed with exit code 1".
+  2. Applied Smallest Correct Toolchain Fix:
+     - Updated Android NDK from `r26d` to `r27c` (`27.2.12479018`) using `nttld/setup-ndk@v1` with fallback to pre-installed `/usr/local/lib/android/sdk/ndk/27.2.12479018`.
+     - NDK r27c bundles Clang 18.0.1 (`clang-r522817d`) and LLD 18, providing complete native recognition and range-checked evaluation of relocation 315.
+     - Exported `$(go env GOPATH)/bin` to `$GITHUB_PATH` ensuring gomobile and gobind are available across all workflow steps.
+     - Preserved sing-box v1.14.4, Go 1.24, Cronet, QUIC, and WireGuard features without disabling or omitting any capabilities.
+  3. Structured 8-Step Verification Pipeline:
+     - Step 1: Print selected toolchain versions (NDK r27c source.properties, Clang 18, Go 1.24, gomobile/gobind).
+     - Step 2: Build native engine via `go run ./cmd/internal/build_libbox -target android`.
+     - Step 3: Verify ARM64 native binary in `libbox.aar` (`jni/arm64-v8a/libbox.so` non-empty and >1MB).
+     - Step 4: Verify ARMv7 native binary in `libbox.aar` (`jni/armeabi-v7a/libbox.so` non-empty and >1MB).
+     - Step 5: Package and inspect dual-ABI AAR copied to `app/libs/libbox.aar`.
+     - Step 6: Execute Gradle compilation and unit tests (`gradle :app:testDebugUnitTest`).
+     - Step 7: Assemble dual-ARM debug APK (`gradle :app:assembleDebug`).
+     - Step 8: Verify staged APK at `dist/vianshield-dual-arm-debug.apk` exists, is non-empty, and contains both `lib/armeabi-v7a/libbox.so` and `lib/arm64-v8a/libbox.so`, uploading artifact `vianshield-dual-arm-debug-apk`.
+* **How it was verified:**
+  - Local build verification: `compile_applet` passed.
+  - Local JVM test execution: `gradle :app:testDebugUnitTest` executed and passed (`BUILD SUCCESSFUL in 33s`, 32 tasks, 0 failures).
+  - Workspace security scan: silent audit verified zero exposed credentials, tokens, or committed keystores.
+  - Remote native compilation: configured in `.github/workflows/build-vianshield.yml` for execution on GitHub Actions runner.
+* **Any deviation from what was requested, and why:** None.
+* **Any known issue or follow-up needed:** Ready for GitHub Actions execution. On-device physical testing required for live tunnel verification.

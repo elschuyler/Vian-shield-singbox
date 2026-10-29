@@ -39,72 +39,112 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up Android NDK (r26d)
+      - name: Set up Android NDK (r27c)
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r26d
+          ndk-version: r27c
           add-to-path: true
 
-      - name: Configure Android NDK Environment
+      - name: Configure Android NDK & Toolchain Environment
         run: |
           NDK_PATH="${{ steps.setup-ndk.outputs.ndk-path }}"
           if [ -z "$NDK_PATH" ] || [ ! -d "$NDK_PATH" ]; then
-            if [ -d "${ANDROID_HOME}/ndk/26.3.11579264" ]; then
-              NDK_PATH="${ANDROID_HOME}/ndk/26.3.11579264"
-            elif [ -d "/usr/local/lib/android/sdk/ndk/26.3.11579264" ]; then
-              NDK_PATH="/usr/local/lib/android/sdk/ndk/26.3.11579264"
+            if [ -d "${ANDROID_HOME}/ndk/27.2.12479018" ]; then
+              NDK_PATH="${ANDROID_HOME}/ndk/27.2.12479018"
+            elif [ -d "/usr/local/lib/android/sdk/ndk/27.2.12479018" ]; then
+              NDK_PATH="/usr/local/lib/android/sdk/ndk/27.2.12479018"
+            elif [ -n "$ANDROID_NDK_HOME" ] && [ -d "$ANDROID_NDK_HOME" ]; then
+              NDK_PATH="$ANDROID_NDK_HOME"
             fi
           fi
           echo "Selected NDK path: $NDK_PATH"
+          test -d "$NDK_PATH" || { echo "::error::NDK path does not exist: $NDK_PATH"; exit 1; }
           echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
           echo "ANDROID_NDK_ROOT=$NDK_PATH" >> $GITHUB_ENV
           echo "${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
 
-      - name: Verify Toolchain Paths
+      - name: 1. Print Selected Toolchains & Initialize SagerNet gomobile
+        working-directory: sing-box-source
         run: |
-          echo "=== Go Toolchain ==="
+          echo "=== 1. Selected Toolchain Versions ==="
+          echo "Android NDK Home: $ANDROID_NDK_HOME"
+          test -d "$ANDROID_NDK_HOME" || { echo "::error::ANDROID_NDK_HOME does not exist!"; exit 1; }
+          if [ -f "$ANDROID_NDK_HOME/source.properties" ]; then
+            cat "$ANDROID_NDK_HOME/source.properties"
+          fi
+          echo "--- Clang Version ---"
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version | head -n 2
+          echo "--- Go Version ---"
           go version
-          echo "=== NDK Environment ==="
-          echo "ANDROID_NDK_HOME: $ANDROID_NDK_HOME"
-          echo "ANDROID_NDK_ROOT: $ANDROID_NDK_ROOT"
-          ls -ld "$ANDROID_NDK_HOME"
-          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version | head -n 1
+          echo "--- Installing SagerNet gomobile / gobind v0.1.13 ---"
+          go install -v github.com/sagernet/gomobile/cmd/gomobile@v0.1.13
+          go install -v github.com/sagernet/gomobile/cmd/gobind@v0.1.13
+          which gomobile
+          which gobind
+          echo "--- Initializing gomobile with NDK r27c ---"
+          gomobile init
 
-      - name: Install SagerNet gomobile toolchain
+      - name: 2. Build Native Engine for ARM64 & ARMv7 (build_libbox)
         working-directory: sing-box-source
         run: |
-          make lib_install
-
-      - name: Compile libbox.aar via official build_libbox
-        working-directory: sing-box-source
-        run: |
+          echo "=== 2. Building libbox.aar via official build_libbox ==="
           go run ./cmd/internal/build_libbox -target android
+          test -s libbox.aar || { echo "::error::sing-box-source/libbox.aar was not generated!"; exit 1; }
 
-      - name: Verify and Place libbox.aar in app/libs/
+      - name: 3. Verify ARM64 Native Binary in libbox.aar
         run: |
-          echo "=== Verifying libbox.aar contents ==="
-          test -s sing-box-source/libbox.aar
-          unzip -l sing-box-source/libbox.aar | grep "jni/armeabi-v7a/libbox.so" || { echo "::error::libbox.aar missing armeabi-v7a native binary!"; exit 1; }
-          unzip -l sing-box-source/libbox.aar | grep "jni/arm64-v8a/libbox.so" || { echo "::error::libbox.aar missing arm64-v8a native binary!"; exit 1; }
-          echo "=== Placing libbox.aar in app/libs/ ==="
+          echo "=== 3. Verifying ARM64 (arm64-v8a) native engine ==="
+          unzip -l sing-box-source/libbox.aar | grep "jni/arm64-v8a/libbox.so" || { echo "::error::Missing jni/arm64-v8a/libbox.so in libbox.aar!"; exit 1; }
+          ARM64_SIZE=$(unzip -p sing-box-source/libbox.aar jni/arm64-v8a/libbox.so | wc -c)
+          echo "ARM64 libbox.so size: $ARM64_SIZE bytes"
+          if [ "$ARM64_SIZE" -lt 1000000 ]; then
+            echo "::error::ARM64 libbox.so is suspiciously small ($ARM64_SIZE bytes)! Compilation or linking failed.";
+            exit 1;
+          fi
+          echo "ARM64 native binary successfully verified."
+
+      - name: 4. Verify ARMv7 Native Binary in libbox.aar
+        run: |
+          echo "=== 4. Verifying ARMv7 (armeabi-v7a) native engine ==="
+          unzip -l sing-box-source/libbox.aar | grep "jni/armeabi-v7a/libbox.so" || { echo "::error::Missing jni/armeabi-v7a/libbox.so in libbox.aar!"; exit 1; }
+          ARMV7_SIZE=$(unzip -p sing-box-source/libbox.aar jni/armeabi-v7a/libbox.so | wc -c)
+          echo "ARMv7 libbox.so size: $ARMV7_SIZE bytes"
+          if [ "$ARMV7_SIZE" -lt 1000000 ]; then
+            echo "::error::ARMv7 libbox.so is suspiciously small ($ARMV7_SIZE bytes)! Compilation or linking failed.";
+            exit 1;
+          fi
+          echo "ARMv7 native binary successfully verified."
+
+      - name: Package and Inspect Dual-ABI AAR
+        run: |
+          echo "=== Packaging and inspecting dual-ABI libbox.aar ==="
           mkdir -p app/libs
           cp sing-box-source/libbox.aar app/libs/libbox.aar
           ls -lh app/libs/libbox.aar
+          echo "--- JNI Native Library Listing ---"
+          unzip -l app/libs/libbox.aar "jni/*"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Build Dual-ARM Debug APK (armeabi-v7a + arm64-v8a)
+      - name: 5. Run Gradle Compilation and Unit Tests
         run: |
+          echo "=== 5. Running Gradle Unit Tests ==="
+          gradle :app:testDebugUnitTest --stacktrace
+
+      - name: 6. Assemble Dual-ARM Debug APK
+        run: |
+          echo "=== 6. Assembling Dual-ARM Debug APK ==="
           mkdir -p dist
           gradle :app:assembleDebug --stacktrace
           cp app/build/outputs/apk/debug/app-debug.apk dist/vianshield-dual-arm-debug.apk
 
-      - name: Verify Staged Dual-ARM Debug APK
+      - name: 7. Verify Final APK Native ABIs & Non-Empty
         run: |
-          echo "=== Verifying staged dual-ARM APK in dist/ ==="
+          echo "=== 7. Verifying staged dual-ARM APK in dist/ ==="
           if [ ! -s dist/vianshield-dual-arm-debug.apk ]; then
             echo "::error::dist/vianshield-dual-arm-debug.apk does not exist or is empty!"
             ls -la app/build/outputs/apk/debug/ || echo "Directory app/build/outputs/apk/debug/ does not exist"
@@ -112,8 +152,8 @@ jobs:
           fi
           echo "=== Verifying native ABI contents in APK ==="
           unzip -l dist/vianshield-dual-arm-debug.apk "lib/*"
-          unzip -l dist/vianshield-dual-arm-debug.apk | grep "lib/armeabi-v7a/" || { echo "::error::Missing armeabi-v7a native libraries!"; exit 1; }
-          unzip -l dist/vianshield-dual-arm-debug.apk | grep "lib/arm64-v8a/" || { echo "::error::Missing arm64-v8a native libraries!"; exit 1; }
+          unzip -l dist/vianshield-dual-arm-debug.apk | grep "lib/armeabi-v7a/libbox.so" || { echo "::error::Missing armeabi-v7a native library in APK!"; exit 1; }
+          unzip -l dist/vianshield-dual-arm-debug.apk | grep "lib/arm64-v8a/libbox.so" || { echo "::error::Missing arm64-v8a native library in APK!"; exit 1; }
           echo "=== Dual-ARM APK verified successfully ==="
           ls -lh dist/vianshield-dual-arm-debug.apk
 
@@ -124,7 +164,7 @@ jobs:
           ls -laR app/build/outputs/ || true
           ls -la app/libs/ || true
 
-      - name: Upload Single Dual-ARM Debug APK Artifact
+      - name: 8. Upload Single Dual-ARM Debug APK Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
