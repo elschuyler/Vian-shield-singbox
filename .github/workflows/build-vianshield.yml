@@ -69,6 +69,7 @@ jobs:
       - name: 1. Print Selected Toolchains & Initialize SagerNet gomobile
         working-directory: sing-box-source
         run: |
+          export PATH="$(go env GOPATH)/bin:$PATH"
           echo "=== 1. Selected Toolchain Versions ==="
           echo "Android NDK Home: $ANDROID_NDK_HOME"
           test -d "$ANDROID_NDK_HOME" || { echo "::error::ANDROID_NDK_HOME does not exist!"; exit 1; }
