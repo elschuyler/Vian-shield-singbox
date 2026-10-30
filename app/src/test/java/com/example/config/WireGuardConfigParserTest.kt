@@ -12,7 +12,7 @@ import org.robolectric.annotation.Config
 import java.io.ByteArrayInputStream
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [35])
 class WireGuardConfigParserTest {
 
     // Standard 32-byte WireGuard keys: 43 Base64 chars + 1 '=' padding = 44 characters total

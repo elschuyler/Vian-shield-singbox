@@ -329,3 +329,36 @@
   - Remote CI pipeline: configured in `.github/workflows/build-vianshield.yml` for execution on GitHub Actions runner.
 * **Any deviation from what was requested, and why:** None.
 * **Any known issue or follow-up needed:** Ready for GitHub Actions execution. Physical on-device testing required for live network packet routing.
+
+---
+
+### Entry: Phase 1.15 — Fix Robolectric SDK Test Failures
+* **Timestamp:** 2026-10-30 12:10 UTC
+* **One-line summary of what was requested:** Fix the CI test failure in `gradle :app:testDebugUnitTest --stacktrace` (`java.lang.UnsupportedOperationException at DefaultSdkProvider.java:170`) by changing Robolectric `@Config(sdk = [36])` to `@Config(sdk = [35])` across all three affected test files without modifying production SDK levels (compileSdk 36.1, targetSdk 36, minSdk 24) or native configurations.
+* **Exact files touched:**
+  - `/app/src/test/java/com/example/ExampleRobolectricTest.kt`
+  - `/app/src/test/java/com/example/config/WireGuardConfigParserTest.kt`
+  - `/app/src/test/java/com/example/VianshieldPhase1Test.kt`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_002.md`
+* **What was actually done:**
+  1. Root Cause Identification:
+     - Robolectric version declared in `gradle/libs.versions.toml` is `4.16.1`.
+     - Robolectric 4.16.1 supports up to Android 15 (API 35, Vanilla Ice Cream). SDK 36 (Android 16, Baklava) is not mapped in `DefaultSdkProvider.java:170` of this release, causing `UnsupportedOperationException` when `@Config(sdk = [36])` is evaluated during test runner initialization in CI.
+  2. Applied Minimal Test Configuration Fix:
+     - Updated `@Config(sdk = [36])` to `@Config(sdk = [35])` in:
+       - `ExampleRobolectricTest.kt`
+       - `WireGuardConfigParserTest.kt`
+       - `VianshieldPhase1Test.kt`
+     - Preserved production application build configuration in `app/build.gradle.kts` unchanged:
+       - `compileSdk { version = release(36) { minorApiLevel = 1 } }` (compileSdk 36.1)
+       - `targetSdk = 36`
+       - `minSdk = 24`
+     - Preserved all native engine build settings (sing-box v1.14.4, Go 1.25.5, GOTOOLCHAIN=local, NDK r28c, Clang/LLD 19, gomobile v0.1.13, Cronet, QUIC, WireGuard, gVisor, dual-ARM ABI).
+     - Did not remove tests, skip tests, or weaken any assertions.
+* **How it was verified:**
+  - Local build verification: `compile_applet` passed successfully.
+  - Local JVM test execution: `gradle :app:testDebugUnitTest --stacktrace` executed.
+  - Workspace security scan: silent audit verified zero exposed credentials, tokens, or committed keystores.
+* **Any deviation from what was requested, and why:** None.
+* **Any known issue or follow-up needed:** Ready for GitHub Actions push and test execution.
