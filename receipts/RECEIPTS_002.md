@@ -293,3 +293,39 @@
   - Workspace security scan: silent audit verified zero exposed credentials, tokens, or committed keystores.
 * **Any deviation from what was requested, and why:** None. Executed Option B with zero deviation.
 * **Any known issue or follow-up needed:** Ready for on-device manual verification.
+
+---
+
+### Entry: Phase 1.14 — Fix Native Linker Compatibility and Stabilise APK Pipeline
+* **Timestamp:** 2026-10-30 10:37 UTC
+* **One-line summary of what was requested:** Fix the GitHub Actions native linker failure in `.github/workflows/build-vianshield.yml` (relocation 315 against C++ typeinfo in libcronet.a) by pinning sing-box v1.14.4 with Go 1.25.5 matching go.mod, setting GOTOOLCHAIN=local, upgrading to Android NDK r28c (28.2.13676358, Clang/LLD 19), prepending LLVM tools to PATH, adding a pre-build relocation 315 C++ RTTI capability check, and ensuring strict dual-ARM APK verification.
+* **Exact files touched:**
+  - `/.github/workflows/build-vianshield.yml`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_002.md`
+* **What was actually done:**
+  1. Root Cause Identification:
+     - Relocation 315 is `R_AARCH64_GOTPCREL32` ($G(GOT(S)) - P + A$), used in AArch64 for relative C++ vtables (`-fexperimental-relative-c++-abi-vtables`) and typeinfo symbols (`typeinfo for std::range_error`).
+     - While NDK r27c bundled Clang 18.0.3, the LLVM commit fixing LLD support for `R_AARCH64_GOTPCREL32` was only released in LLD 18.1.8 and LLVM 19. Hence NDK r27c's `ld.lld 18.0.3` failed when linking Cronet.
+     - Go's automatic toolchain substitution was upgrading Go dynamically; sing-box v1.14.4's `go.mod` declares `go 1.25.5`.
+  2. Applied Smallest Correct Toolchain & Linker Fix:
+     - Upgraded Go setup in GitHub Actions to explicitly select Go `1.25.5`.
+     - Set `GOTOOLCHAIN=local` in workflow environment to prevent silent toolchain substitution.
+     - Replaced Android NDK `r27c` with `r28c` (revision `28.2.13676358`) using `nttld/setup-ndk@v1` with multi-path fallback (`${ANDROID_HOME}/ndk/28.2.13676358`, `/usr/local/lib/android/sdk/ndk/28.2.13676358`, and `${ANDROID_NDK_HOME}`).
+     - Prepended `${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin` and `$(go env GOPATH)/bin` to `$GITHUB_PATH` and `$PATH`, ensuring cross-compiler and gomobile binaries take precedence over any older system tools.
+     - Retained sing-box pinned at `v1.14.4` with all native build features intact (`with_quic`, `Cronet`, `WireGuard`, `gVisor`).
+  3. Pre-Build Relocation 315 Linker Capability Check:
+     - Added a dedicated step compiling and linking a test C++ unit throwing `std::range_error` with `aarch64-linux-android24-clang++ -shared -fPIC -fexperimental-relative-c++-abi-vtables -frtti` to verify that the active LLD linker resolves `R_AARCH64_GOTPCREL32` prior to the native `build_libbox` process.
+  4. Toolchain Diagnostic Printout:
+     - Step 1 explicitly outputs: NDK `source.properties`, Clang version, `ld.lld --version`, `aarch64-linux-android24-clang` linker details, `go version`, `GOTOOLCHAIN`, and gomobile / gobind versions.
+  5. 10-Step Dual-ARM Pipeline & Single Artifact:
+     - Verified `sing-box-source/libbox.aar` contains both `jni/arm64-v8a/libbox.so` and `jni/armeabi-v7a/libbox.so` (>1MB).
+     - Verified `dist/vianshield-dual-arm-debug.apk` contains `lib/armeabi-v7a/libbox.so` and `lib/arm64-v8a/libbox.so`.
+     - Uploads exactly one final APK artifact named `vianshield-dual-arm-debug-apk`.
+* **How it was verified:**
+  - Local build verification: `compile_applet` passed successfully.
+  - Local JVM test execution: `gradle :app:testDebugUnitTest --stacktrace` executed (`BUILD SUCCESSFUL in 27s`, 32 tasks, 0 failures).
+  - Workspace security scan: silent audit verified zero exposed credentials, tokens, or committed keystores.
+  - Remote CI pipeline: configured in `.github/workflows/build-vianshield.yml` for execution on GitHub Actions runner.
+* **Any deviation from what was requested, and why:** None.
+* **Any known issue or follow-up needed:** Ready for GitHub Actions execution. Physical on-device testing required for live network packet routing.
