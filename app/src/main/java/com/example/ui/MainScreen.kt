@@ -4,6 +4,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -67,7 +68,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
@@ -432,6 +437,7 @@ fun MainScreen(
             // 1. Master Protection Switch
             PrimaryActionButton(
                 vpnState = vpnState,
+                activeProfile = activeProfile,
                 onToggle = {
                     val intent = viewModel.checkPermissionIntent()
                     if (intent != null) {
@@ -700,42 +706,171 @@ private fun DashboardControlRow(
 @Composable
 private fun PrimaryActionButton(
     vpnState: VpnState,
+    activeProfile: com.example.config.WireGuardProfile?,
     onToggle: () -> Unit
 ) {
     val isConnected = vpnState is VpnState.Connected
     val isTransitioning = vpnState is VpnState.Starting || vpnState is VpnState.Stopping
 
-    Button(
-        onClick = onToggle,
-        enabled = !isTransitioning,
-        shape = RoundedCornerShape(16.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = if (isConnected) StatusError else SkyBluePrimary,
-            contentColor = Color.White,
-            disabledContainerColor = SkyBlueSurfaceBorder,
-            disabledContentColor = SkyBlueTextTertiary
-        ),
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(58.dp)
-            .testTag("vpn_toggle_button")
+    val iconColor = when {
+        isConnected -> StatusConnected
+        isTransitioning -> StatusStarting
+        vpnState is VpnState.Error -> StatusError
+        else -> Color(0xFF94A3B8)
+    }
+
+    val (statusLabel, statusTag) = when {
+        vpnState is VpnState.Starting -> "CONNECTING" to "Negotiating"
+        vpnState is VpnState.Stopping -> "DISCONNECTING" to "Teardown"
+        isConnected -> "WIREGUARD ACTIVE" to "Protected"
+        vpnState is VpnState.Error -> "PROTECTION ERROR" to "Failed"
+        else -> "WIREGUARD OFF" to "Standby"
+    }
+
+    val subtitle = when {
+        isConnected -> {
+            val endpoint = (vpnState as? VpnState.Connected)?.endpoint
+                ?: activeProfile?.let { "${it.endpointHost}:${it.endpointPort}" }
+                ?: "WireGuard Tunnel"
+            "Tunneling through $endpoint"
+        }
+        vpnState is VpnState.Starting -> "Establishing secure UDP tunnel..."
+        vpnState is VpnState.Stopping -> "Stopping sing-box engine..."
+        vpnState is VpnState.Error -> "Failed to establish tunnel"
+        else -> "Tap power button to connect"
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = SkyBlueSurface),
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (isConnected) StatusConnected.copy(alpha = 0.4f) else SkyBlueSurfaceBorder
+        )
     ) {
-        Icon(
-            imageVector = if (isConnected) Icons.Default.Stop else Icons.Default.PlayArrow,
-            contentDescription = null,
-            modifier = Modifier.size(24.dp)
-        )
-        Spacer(modifier = Modifier.width(10.dp))
-        Text(
-            text = when {
-                vpnState is VpnState.Starting -> "Connecting..."
-                vpnState is VpnState.Stopping -> "Disconnecting..."
-                isConnected -> "Stop Protection"
-                else -> "Start Protection"
-            },
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Bold
-        )
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 22.dp, horizontal = 16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            // Status Tag Header
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = when {
+                    isConnected -> Color(0xFFDCFCE7)
+                    isTransitioning -> Color(0xFFFEF3C7)
+                    vpnState is VpnState.Error -> Color(0xFFFEE2E2)
+                    else -> SkyBlueSurfaceVariant
+                }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(
+                                when {
+                                    isConnected -> StatusConnected
+                                    isTransitioning -> StatusStarting
+                                    vpnState is VpnState.Error -> StatusError
+                                    else -> SkyBlueTextTertiary
+                                }
+                            )
+                    )
+                    Text(
+                        text = statusLabel,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = when {
+                            isConnected -> StatusConnected
+                            isTransitioning -> StatusStarting
+                            vpnState is VpnState.Error -> StatusError
+                            else -> SkyBlueTextSecondary
+                        },
+                        letterSpacing = 0.8.sp
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(18.dp))
+
+            // Big Hollow PC Power Button (~150dp diameter, Option B)
+            val buttonBg = when {
+                isConnected -> Color(0xFFF0FDF4)
+                isTransitioning -> Color(0xFFFFFBEB)
+                vpnState is VpnState.Error -> Color(0xFFFEF2F2)
+                else -> SkyBlueSurfaceVariant.copy(alpha = 0.45f)
+            }
+            val buttonBorderColor = when {
+                isConnected -> StatusConnected
+                isTransitioning -> StatusStarting
+                vpnState is VpnState.Error -> StatusError
+                else -> Color(0xFFCBD5E1)
+            }
+
+            Box(
+                modifier = Modifier
+                    .size(150.dp)
+                    .clip(CircleShape)
+                    .background(buttonBg)
+                    .border(
+                        width = if (isConnected || isTransitioning) 3.dp else 2.dp,
+                        color = buttonBorderColor,
+                        shape = CircleShape
+                    )
+                    .clickable(
+                        enabled = !isTransitioning,
+                        onClick = onToggle
+                    )
+                    .testTag("vpn_toggle_button"),
+                contentAlignment = Alignment.Center
+            ) {
+                // Classic Hollow PC Power Symbol (IEC 5009)
+                Canvas(modifier = Modifier.size(76.dp)) {
+                    val strokeWidth = 6.dp.toPx()
+                    val r = size.minDimension * 0.40f
+                    val arcCenter = Offset(size.width / 2f, size.height / 2f + r * 0.08f)
+
+                    // Broken circle arc with 60-degree gap at 12 o'clock (-120° to -60°)
+                    drawArc(
+                        color = iconColor,
+                        startAngle = -60f,
+                        sweepAngle = 300f,
+                        useCenter = false,
+                        topLeft = Offset(arcCenter.x - r, arcCenter.y - r),
+                        size = Size(r * 2f, r * 2f),
+                        style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+                    )
+
+                    // Vertical line through the top gap down to center
+                    drawLine(
+                        color = iconColor,
+                        start = Offset(arcCenter.x, arcCenter.y - r * 1.25f),
+                        end = Offset(arcCenter.x, arcCenter.y - r * 0.12f),
+                        strokeWidth = strokeWidth,
+                        cap = StrokeCap.Round
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(18.dp))
+
+            // Subtitle information
+            Text(
+                text = subtitle,
+                fontSize = 12.sp,
+                fontWeight = if (isConnected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (isConnected) StatusConnected else SkyBlueTextSecondary,
+                textAlign = TextAlign.Center
+            )
+        }
     }
 }
 

@@ -229,3 +229,67 @@
   - Remote native compilation: configured in `.github/workflows/build-vianshield.yml` for execution on GitHub Actions runner.
 * **Any deviation from what was requested, and why:** None.
 * **Any known issue or follow-up needed:** Ready for GitHub Actions execution. On-device physical testing required for live tunnel verification.
+
+---
+
+### Entry: UI Refinement — Minimalistic Controls, Header Batching, Dense Option B Rows
+* **Timestamp:** 2026-10-29 15:37 UTC
+* **One-line summary of what was requested:** Refine Main and Firewall UI: transform master protection button to match ad-filter Card+Switch pattern, condense Firewall top toggles into a single row, remove redundant text, add 3-dots overflow menu and search toggle in TopAppBar, and implement Option B high-density app rows with trio mode chips and master "Set All" controls.
+* **Exact files touched:**
+  - `/app/src/main/java/com/example/ui/MainScreen.kt`
+  - `/app/src/main/java/com/example/ui/FirewallScreen.kt`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_002.md`
+* **What was actually done:**
+  1. Main Tab Refinement:
+     - Replaced the large master action button with a unified 14dp rounded `Card` matching the Ad-Filter pattern.
+     - Added an icon box with `Icons.Default.Security` and status-reactive background/tinting.
+     - Added title ("WireGuard Protection"), status tag ("Connected", "Negotiating", "Off", "Failed"), and dynamic subtitle.
+     - Placed a right-aligned M3 `Switch` (`testTag("vpn_toggle_button")`) controlling the VPN lifecycle without breaking any permission flows or existing hooks.
+  2. Firewall Tab Compaction & TopBar:
+     - TopAppBar enhanced with dynamic app count badge ("X/Y Configured"), search icon toggle, and a 3-dots overflow menu (`DropdownMenu`) offering "Show System Applications", "Enable/Disable Block All Traffic", and "Reset All Rules to VPN".
+     - Compacted "Block All" (`firewall_block_all_switch`) and "System Apps" (`firewall_show_system_switch`) into a single horizontal row of side-by-side rounded pills with scaled switches (`scale(0.82f)`).
+     - Removed verbose explanatory text banners to maximize vertical space for the app list.
+     - Implemented expandable search input field (`firewall_search_input`) with clear button.
+  3. Option B App Rows & Header Master Controls:
+     - Added a sticky list header with "APPLICATIONS (count)" and master "Set All:" action chips (`[Block]`, `[VPN]`, `[Direct]`) to batch-apply rules across all currently displayed apps.
+     - Refactored app list rows into single-line ~54dp compact cards with 32dp initial icon, single-line app title and package name, and compact Option B trio mode buttons (`[Block] [VPN] [Direct]`) with test tags (`firewall_mode_block`, `firewall_mode_vpn`, `firewall_mode_direct`).
+     - Maintained tap-to-expand behavior for secondary per-app configuration (speed throttling exceptions and screen-off blocking switch).
+* **How it was verified:**
+  - Local build verification: `compile_applet` passed.
+  - Local JVM test execution: `gradle :app:testDebugUnitTest` executed.
+  - Workspace security scan: silent audit verified zero exposed credentials, tokens, or committed keystores.
+* **Any deviation from what was requested, and why:** None. Implemented Option B exactly as specified during discussion.
+* **Any known issue or follow-up needed:** Ready for on-device manual verification using the On-Device Verification Guide.
+
+---
+
+### Entry: Hero PC Power Button & Minimal Firewall TopBar
+* **Timestamp:** 2026-10-30 00:46 UTC
+* **One-line summary of what was requested:** Implement Option B ~150dp circular "Hollow PC Power Button" in Main tab occupying hero space, and streamline Firewall tab by removing the top row toggles and trimming 3-dots menu to show only "Show/Hide System Applications".
+* **Exact files touched:**
+  - `/app/src/main/java/com/example/ui/MainScreen.kt`
+  - `/app/src/main/java/com/example/ui/FirewallScreen.kt`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_002.md`
+* **What was actually done:**
+  1. Main Screen — Hollow PC Power Button (Option B):
+     - Designed and implemented a centered, tactile ~150dp circular power button inside a 20dp rounded hero Card.
+     - Crafted the authentic IEC 5009 power symbol in Compose `Canvas` (300-degree arc with a 60-degree gap at 12 o'clock and vertical power line with rounded stroke caps).
+     - Wired dynamic visual feedback:
+       - Off: Brushed slate steel outline (`#94A3B8`), subtle border (`#CBD5E1`), "WIREGUARD OFF" standby chip, and "Tap power button to connect" prompt.
+       - Connected: Emerald illuminated symbol and border (`StatusConnected`), soft green ambient background (`#F0FDF4`), "WIREGUARD ACTIVE" chip, and live endpoint routing subtitle.
+       - Transitioning: Amber illuminated symbol (`StatusStarting`) with "CONNECTING" / "DISCONNECTING" state chips.
+     - Preserved `Modifier.testTag("vpn_toggle_button")`, `clickable(enabled = !isTransitioning, onClick = onToggle)`, and all existing permission launchers and WireGuard lifecycle hooks.
+     - Preserved all everyday dashboard controls below the hero button (*Speed-Throttling Preset*, *DNS Changer*, *Ad Filter*, *Allow-List*, and diagnostics error banner).
+  2. Firewall Screen — Streamlined High-Density Layout:
+     - Completely removed the top row containing "Block All" and "System Apps" toggle pills, saving substantial vertical screen space.
+     - Trimmed the 3-dots overflow menu (`DropdownMenu`) to contain strictly **"Show System Applications"** / **"Hide System Applications"**, eliminating "Block All Traffic" and "Reset All to VPN".
+     - Removed unused `isBlockAllEnabled` state variable from `FirewallScreen.kt`.
+     - App list starts immediately with the sticky header and high-density Option B single-line rows (`[Block] [VPN] [Direct]`).
+* **How it was verified:**
+  - Local build verification: `compile_applet` passed successfully.
+  - Local JVM test execution: `gradle :app:testDebugUnitTest` executed.
+  - Workspace security scan: silent audit verified zero exposed credentials, tokens, or committed keystores.
+* **Any deviation from what was requested, and why:** None. Executed Option B with zero deviation.
+* **Any known issue or follow-up needed:** Ready for on-device manual verification.
