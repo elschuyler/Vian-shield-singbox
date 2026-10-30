@@ -51,7 +51,7 @@ object SingBoxStorageManager {
                 "Bootstrapping sing-box sandbox directories: base=${baseDir.absolutePath}, working=${workingDir.absolutePath}, temp=${tempDir.absolutePath}"
             )
             engine.setupEnvironment(baseDir, workingDir, tempDir)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             val err = "Failed to setup sandbox storage environment: ${e.message}"
             OperationalLogCatcher.error(LogCategory.ENGINE_INIT, "StorageManager", err)
             Result.failure(e)

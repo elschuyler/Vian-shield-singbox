@@ -40,14 +40,34 @@ class SingBoxAdapter(
         private const val COMMAND_SERVER_HANDLER_CLASS = "io.nekohasekai.libbox.CommandServerHandler"
         private const val OVERRIDE_OPTIONS_CLASS = "io.nekohasekai.libbox.OverrideOptions"
 
+        @Volatile
+        private var cachedNativeAvailable: Boolean? = null
+
         fun isNativeAvailable(): Boolean {
-            return try {
-                Class.forName(LIBBOX_CLASS)
+            cachedNativeAvailable?.let { return it }
+            val available = try {
+                val libboxCls = Class.forName(LIBBOX_CLASS)
                 Class.forName(PLATFORM_INTERFACE_CLASS)
+
+                // Verify that the native JNI library is actually linked and callable in this runtime.
+                // In a host JVM (Robolectric / JUnit on x86_64), libbox.so (ARM) is not linked,
+                // so attempting to invoke any native JNI method throws UnsatisfiedLinkError.
+                val versionMethod = libboxCls.methods.firstOrNull { it.name.equals("version", ignoreCase = true) && it.parameterCount == 0 }
+                if (versionMethod != null) {
+                    versionMethod.invoke(null)
+                }
                 true
-            } catch (_: ClassNotFoundException) {
+            } catch (_: Throwable) {
+                // Catches ClassNotFoundException, UnsatisfiedLinkError, LinkageError, ExceptionInInitializerError
                 false
             }
+            cachedNativeAvailable = available
+            return available
+        }
+
+        @androidx.annotation.VisibleForTesting
+        fun resetNativeAvailabilityCache() {
+            cachedNativeAvailable = null
         }
     }
 
@@ -76,12 +96,12 @@ class SingBoxAdapter(
         workingDir.mkdirs()
         tempDir.mkdirs()
 
-        if (isNativeBinaryAvailable()) {
+        if (!allowSimulationForTesting && isNativeBinaryAvailable()) {
             return try {
                 val libboxCls = Class.forName(LIBBOX_CLASS)
                 val setupOptionsCls = try {
                     Class.forName(SETUP_OPTIONS_CLASS)
-                } catch (_: ClassNotFoundException) {
+                } catch (_: Throwable) {
                     null
                 }
 
@@ -123,8 +143,8 @@ class SingBoxAdapter(
                 }
                 isEnvironmentConfigured = true
                 Result.success(Unit)
-            } catch (e: Exception) {
-                val root = unwrapReflectionException(e)
+            } catch (t: Throwable) {
+                val root = unwrapReflectionException(t)
                 val warn = "Libbox.setup() warning: ${root.message ?: root.toString()}"
                 OperationalLogCatcher.warn(LogCategory.ENGINE_INIT, "SingBoxAdapter", warn)
                 isEnvironmentConfigured = true
@@ -152,7 +172,7 @@ class SingBoxAdapter(
         }
 
         // 2. Native Libbox.checkConfig verification (BitProxy patch 0007)
-        if (isNativeBinaryAvailable()) {
+        if (!allowSimulationForTesting && isNativeBinaryAvailable()) {
             return try {
                 val libboxCls = Class.forName(LIBBOX_CLASS)
                 val checkMethod = libboxCls.methods.firstOrNull { it.name.equals("checkConfig", ignoreCase = true) }
@@ -165,8 +185,8 @@ class SingBoxAdapter(
                     )
                 }
                 Result.success(Unit)
-            } catch (e: Exception) {
-                val root = unwrapReflectionException(e)
+            } catch (t: Throwable) {
+                val root = unwrapReflectionException(t)
                 val err = "Libbox.checkConfig validation failed: ${root.message ?: root.toString()}"
                 OperationalLogCatcher.error(LogCategory.CONFIG_VALIDATION, "SingBoxAdapter", err)
                 Result.failure(IllegalArgumentException(err, root))
@@ -193,7 +213,7 @@ class SingBoxAdapter(
         }
 
         // Check for native libbox presence
-        if (isNativeBinaryAvailable()) {
+        if (!allowSimulationForTesting && isNativeBinaryAvailable()) {
             return initializeNativeCommandServer(configJson, platformCallback)
         }
 
@@ -452,7 +472,7 @@ class SingBoxAdapter(
                 isEngineRunning.set(true)
                 OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 3C: CommandServer service started successfully")
                 Result.success(Unit)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 val root = unwrapReflectionException(e)
                 val err = "CommandServer failed to start [${root.javaClass.name}]: ${root.message ?: root.toString()}"
                 OperationalLogCatcher.error(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", err)
@@ -460,7 +480,7 @@ class SingBoxAdapter(
                 try {
                     val closeServiceMethod = cmdServer.javaClass.methods.firstOrNull { it.name.equals("closeService", ignoreCase = true) }
                     closeServiceMethod?.invoke(cmdServer)
-                } catch (_: Exception) {}
+                } catch (_: Throwable) {}
                 Result.failure(root)
             }
         }
@@ -474,7 +494,7 @@ class SingBoxAdapter(
                 isEngineRunning.set(true)
                 OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "STAGE 3C: Legacy BoxService started successfully")
                 Result.success(Unit)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 val root = unwrapReflectionException(e)
                 val err = "Legacy BoxService failed to start: ${root.message}"
                 OperationalLogCatcher.error(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", err)
@@ -482,7 +502,7 @@ class SingBoxAdapter(
                 try {
                     val closeMethod = legacyService.javaClass.methods.firstOrNull { it.name.equals("close", ignoreCase = true) }
                     closeMethod?.invoke(legacyService)
-                } catch (_: Exception) {}
+                } catch (_: Throwable) {}
                 Result.failure(root)
             }
         }
@@ -512,7 +532,7 @@ class SingBoxAdapter(
                 val closeMethod = cmdServer.javaClass.methods.firstOrNull { it.name.equals("close", ignoreCase = true) }
                 closeMethod?.invoke(cmdServer)
                 nativeCommandServerInstance = null
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 val root = unwrapReflectionException(e)
                 OperationalLogCatcher.warn(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", "Exception closing CommandServer: ${root.message}")
                 nativeCommandServerInstance = null
@@ -525,7 +545,7 @@ class SingBoxAdapter(
                 val closeMethod = legacyService.javaClass.methods.firstOrNull { it.name.equals("close", ignoreCase = true) }
                 closeMethod?.invoke(legacyService)
                 nativeLegacyServiceInstance = null
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 val root = unwrapReflectionException(e)
                 OperationalLogCatcher.warn(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", "Exception closing legacy service: ${root.message}")
                 nativeLegacyServiceInstance = null
@@ -567,7 +587,7 @@ class SingBoxAdapter(
                     activeConfigJson = newConfigJson
                     OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "CommandServer reloaded successfully")
                     Result.success(Unit)
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     val root = unwrapReflectionException(e)
                     OperationalLogCatcher.error(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", "CommandServer reload failed: ${root.message}")
                     Result.failure(root)
@@ -585,7 +605,7 @@ class SingBoxAdapter(
                     activeConfigJson = newConfigJson
                     OperationalLogCatcher.info(LogCategory.ENGINE_INIT, "SingBoxAdapter", "Legacy BoxService reloaded successfully")
                     Result.success(Unit)
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     val root = unwrapReflectionException(e)
                     OperationalLogCatcher.error(LogCategory.ERROR_DIAGNOSTIC, "SingBoxAdapter", "Legacy reload failed: ${root.message}")
                     Result.failure(root)

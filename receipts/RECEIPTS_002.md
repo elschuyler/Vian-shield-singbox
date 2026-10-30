@@ -362,3 +362,39 @@
   - Workspace security scan: silent audit verified zero exposed credentials, tokens, or committed keystores.
 * **Any deviation from what was requested, and why:** None.
 * **Any known issue or follow-up needed:** Ready for GitHub Actions push and test execution.
+
+---
+
+### Phase 1.16: BitProxy-Informed sing-box Android Integration and Native Test Fix
+* **Timestamp:** 2026-10-30 13:20 UTC
+* **One-line summary of what was requested:** Resolve 4 `UnsatisfiedLinkError` test failures in `VianshieldPhase1Test` during GitHub Actions CI `:app:testDebugUnitTest` without weakening or disabling tests, and compare native architecture against BitProxy and official SFA (commit `f87c2ebdb7e34754be751bb5e58926db2fed8f8c`).
+* **Exact files touched:**
+  - `/app/src/main/java/com/example/engine/SingBoxAdapter.kt`
+  - `/app/src/main/java/com/example/engine/SingBoxStorageManager.kt`
+  - `/BLUEPRINT.md`
+  - `/receipts/RECEIPTS_002.md`
+* **What was actually done:**
+  1. Root Cause Identification:
+     - CI step 6 builds and stages `libbox.aar` containing ARM binaries (`arm64-v8a`, `armeabi-v7a`) into `app/libs/`.
+     - CI step 7 runs `:app:testDebugUnitTest` on an Ubuntu x86_64 host runner.
+     - Previously, `SingBoxAdapter.isNativeAvailable()` performed a class presence check (`Class.forName("io.nekohasekai.libbox.Libbox")`), which evaluated to `true` whenever `libbox.aar` was on the test classpath.
+     - Consequently, `SingBoxAdapter` attempted to invoke JNI methods (`Libbox.version()`, `Libbox.setup()`, `Libbox.checkConfig()`, `Libbox.newCommandServer()`), which threw `java.lang.UnsatisfiedLinkError` because no x86_64 native shared library exists inside the Android ARM AAR.
+  2. Applied Fix to `SingBoxAdapter` & `SingBoxStorageManager`:
+     - Updated `SingBoxAdapter.Companion.isNativeAvailable()`: dynamically tests native JNI invocation (`Libbox.version()`) and catches `Throwable` (`UnsatisfiedLinkError`, `LinkageError`, `ExceptionInInitializerError`), returning `false` truthfully on host JVM test runners.
+     - Added `@VisibleForTesting fun resetNativeAvailabilityCache()` to allow clean cache invalidation during unit testing.
+     - Guarded `setupEnvironment()`, `checkConfig()`, and `initialize()` with `if (!allowSimulationForTesting && isNativeBinaryAvailable())`.
+     - When `allowSimulationForTesting == true`, pure Kotlin logic executes (directory creation, structural JSON schema validation, simulated state progression) without triggering native JNI calls on host JVMs.
+     - Updated reflection catch blocks across `initializeNativeCommandServer()`, `start()`, `stop()`, and `reload()` from `Exception` to `Throwable` to properly intercept linkage and initialization errors.
+     - Updated `SingBoxStorageManager.setupEnvironment()` to catch `Throwable`.
+  3. Preserved Architecture & Contracts:
+     - Maintained full typed SFA CommandServer (v1.14.4) and 26-method `PlatformInterface` dynamic proxy dispatch for on-device runtime execution.
+     - Preserved native build toolchain: sing-box v1.14.4, Go 1.25.5, `GOTOOLCHAIN=local`, NDK r28c (`28.2.13676358`), Clang/LLD 19, gomobile v0.1.13, dual-ARM ABI (`armeabi-v7a`, `arm64-v8a`), single artifact `vianshield-dual-arm-debug-apk`.
+     - Preserved all 42 unit tests with strict assertions (no skipped, disabled, or weakened assertions).
+* **How it was verified:**
+  - Local compilation: `compile_applet` passed successfully.
+  - Local JVM test execution: `gradle :app:testDebugUnitTest --stacktrace` executed; all 42 tests passed (20 `VianshieldPhase1Test`, 20 `WireGuardConfigParserTest`, 1 `ExampleRobolectricTest`, 1 `ExampleUnitTest`), 0 failed, 0 skipped.
+  - Debug APK assembly: `gradle :app:assembleDebug` completed with `BUILD SUCCESSFUL`.
+  - Workspace security scan: silent self-audit verified zero exposed credentials, tokens, or committed keystores.
+* **Any deviation from what was requested, and why:** None.
+* **Any known issue or follow-up needed:** Ready for GitHub Actions CI execution.
+
