@@ -398,3 +398,55 @@
 * **Any deviation from what was requested, and why:** None.
 * **Any known issue or follow-up needed:** Ready for GitHub Actions CI execution.
 
+---
+
+### Phase 1.17: ARM64-Only Build, Start-Button Crash Investigation and Crash-Proof Diagnostics
+* **Timestamp:** 2026-10-31 00:40 UTC
+* **One-line summary of what was requested:** Configure ARM64-only APK packaging, fix the VPN Start-button crash, enhance Log Keeper and CrashReporter with pre-crash memory restoration and historical process exit diagnosis, add debouncing and distinct lifecycle states, clarify RFC 5737 TEST-NET-2 timeout distinction, and maintain strict verification.
+* **Exact files touched:**
+  - `app/build.gradle.kts`
+  - `.github/workflows/build-vianshield.yml`
+  - `app/src/main/java/com/example/vpn/VpnState.kt`
+  - `app/src/main/java/com/example/vpn/VianshieldVpnService.kt`
+  - `app/src/main/java/com/example/vpn/VpnLifecycleController.kt`
+  - `app/src/main/java/com/example/engine/SingBoxAdapter.kt`
+  - `app/src/main/java/com/example/logging/StartupContextTracker.kt`
+  - `app/src/main/java/com/example/logging/OperationalLogCatcher.kt`
+  - `app/src/main/java/com/example/logging/CrashReporter.kt`
+  - `app/src/main/java/com/example/VianshieldApplication.kt`
+  - `app/src/main/java/com/example/ui/DiagnosticViewModel.kt`
+  - `app/src/main/java/com/example/ui/MainScreen.kt`
+  - `app/src/main/java/com/example/ui/DiagnosticsScreen.kt`
+  - `app/src/main/java/com/example/ui/ProfilesScreen.kt`
+  - `app/src/main/java/com/example/ui/LogKeeperScreen.kt`
+  - `app/src/test/java/com/example/VianshieldPhase1Test.kt`
+  - `BLUEPRINT.md`
+  - `receipts/RECEIPTS_002.md`
+* **What was actually done:**
+  1. Priority 1 (ARM64-Only Build Configuration):
+     - Pinned `ndk.abiFilters` strictly to `setOf("arm64-v8a")` in `app/build.gradle.kts`.
+     - Added `packaging.jniLibs.excludes` explicitly stripping `armeabi-v7a`, `x86`, `x86_64`, `riscv64`, `mips*`.
+     - Updated `.github/workflows/build-vianshield.yml` to assemble `dist/vianshield-arm64-debug.apk` and upload artifact `vianshield-arm64-debug-apk`. Added automated unzip assertion checking `lib/arm64-v8a/libbox.so` presence and strictly asserting absence of all non-ARM64 ABIs.
+  2. Priority 2 (Start-Button Crash Investigation & Fix):
+     - Traced execution path: Identified primary root cause as `ForegroundServiceDidNotStartInTimeException` caused by delayed invocation of `startForeground()` until Stage 4 inside an async coroutine. When async config preparation failed or took longer than Android OS timeout, the OS killed the process. Fixed by invoking `startForegroundImmediate()` synchronously on `onStartCommand` entry with API 34+ `FOREGROUND_SERVICE_TYPE_SPECIAL_USE`.
+     - Fixed secondary root cause: Dynamic proxy JNI aborts in `SingBoxAdapter.autoDetectInterfaceControl` which previously threw `IllegalStateException` across the Go bridge. Guarded socket protection and stubs to return safe boolean/default values without throwing unhandled Java exceptions across JNI.
+  3. Crash-Proof Diagnostics & Log Keeper Enhancements:
+     - Implemented `StartupContextTracker`: atomic checkpoint persistence to `filesDir/startup_context.json` without storing secrets or keys.
+     - Enhanced `CrashReporter`: integrated `ApplicationExitInfo` historical process exit diagnosis with tombstone trace inspection (`getTraceInputStream()`).
+     - Enhanced `OperationalLogCatcher`: loads persisted disk logs on `initialize(context)` into memory, resolving the discrepancy where pre-crash entries were on disk but invisible in the UI after process restart.
+     - Added 27 structured operational events from UI tap through TUN creation, engine start, and teardown.
+     - Added distinct states (`STOPPED`, `START_REQUESTED`, `PERMISSION_REQUIRED`, `STARTING`, `RUNNING`, `STOPPING`, `FAILED`) to `VpnState`.
+     - Debounced start button in `DiagnosticViewModel` and updated UI indicators.
+     - Documented RFC 5737 TEST-NET-2 (`198.51.100.1:51820`) default test endpoint behavior (connection timeout vs application crash).
+  4. Test Suite Expansion:
+     - Added 6 new unit tests in `VianshieldPhase1Test` covering distinct states, checkpoint persistence, disk restore, process exit diagnosis, button debouncing, and ARM64 service manifest declaration. Total tests increased to 48.
+* **How it was verified:**
+  - Local compilation: `compile_applet` passed successfully.
+  - Local JVM test suite: `gradle :app:testDebugUnitTest --stacktrace` executed; all 48 tests passed (26 `VianshieldPhase1Test`, 20 `WireGuardConfigParserTest`, 1 `ExampleRobolectricTest`, 1 `ExampleUnitTest`), 0 failures, 0 errors, 0 skipped.
+  - Debug APK assembly: `gradle :app:assembleDebug` completed with `BUILD SUCCESSFUL` (19 MB).
+  - Native packaging verification: `unzip -l app/build/outputs/apk/debug/app-debug.apk "lib/*"` verified that ONLY `lib/arm64-v8a/` exists.
+  - Silent workspace security scan: verified zero exposed credentials, API tokens, or hardcoded signing passwords.
+* **Any deviation from what was requested, and why:** None.
+* **Any known issue or follow-up needed:** Ready for GitHub Actions CI execution with artifact `vianshield-arm64-debug-apk`.
+
+

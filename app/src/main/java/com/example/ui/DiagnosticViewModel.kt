@@ -209,15 +209,25 @@ class DiagnosticViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun toggleVpn(permissionLauncher: ActivityResultLauncher<Intent>? = null) {
-        when (vpnState.value) {
-            is VpnState.Connected, is VpnState.Starting -> {
+        OperationalLogCatcher.info(
+            LogCategory.VPN_LIFECYCLE,
+            "DiagnosticViewModel",
+            "[${OperationalLogCatcher.EVENT_START_BUTTON_TAPPED}] Master power button tapped (current state: ${vpnState.value})"
+        )
+
+        when (val state = vpnState.value) {
+            is VpnState.Connected -> {
                 lifecycleController.requestStopVpn()
             }
-            is VpnState.Stopped, is VpnState.Error -> {
-                lifecycleController.requestStartVpn(_currentConfig.value, permissionLauncher)
+            is VpnState.StartRequested, is VpnState.Starting, is VpnState.Stopping -> {
+                OperationalLogCatcher.warn(
+                    LogCategory.VPN_LIFECYCLE,
+                    "DiagnosticViewModel",
+                    "Toggle ignored: VPN state transition in progress ($state) - debounced"
+                )
             }
-            is VpnState.Stopping -> {
-                // Ignore while stopping to prevent conflicting lifecycle states
+            is VpnState.Stopped, is VpnState.Failed, is VpnState.PermissionRequired -> {
+                lifecycleController.requestStartVpn(_currentConfig.value, permissionLauncher)
             }
         }
     }

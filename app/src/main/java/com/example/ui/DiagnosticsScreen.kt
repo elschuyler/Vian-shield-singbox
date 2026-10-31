@@ -193,11 +193,15 @@ fun DiagnosticsScreen(
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    val (statusColor, statusLabel) = when (vpnState) {
+                    val currentVpnState = vpnState
+                    val (statusColor, statusLabel) = when (currentVpnState) {
                         is VpnState.Connected -> Pair(StatusConnected, "Connected")
                         is VpnState.Starting -> Pair(StatusStarting, "Starting (Stage 1-4)")
+                        is VpnState.StartRequested -> Pair(StatusStarting, "Start Requested")
+                        is VpnState.PermissionRequired -> Pair(StatusStarting, "Permission Required")
                         is VpnState.Stopping -> Pair(StatusStarting, "Stopping")
                         is VpnState.Error -> Pair(StatusError, "Error")
+                        is VpnState.Failed -> Pair(StatusError, "Failed: ${currentVpnState.message}")
                         is VpnState.Stopped -> Pair(StatusStopped, "Stopped")
                     }
 
@@ -217,8 +221,8 @@ fun DiagnosticsScreen(
                         )
                     }
 
-                    if (vpnState is VpnState.Error) {
-                        val error = vpnState as VpnState.Error
+                    if (currentVpnState is VpnState.Error) {
+                        val error = currentVpnState
                         Spacer(modifier = Modifier.height(10.dp))
                         Surface(
                             shape = RoundedCornerShape(8.dp),
@@ -235,6 +239,30 @@ fun DiagnosticsScreen(
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     text = "[${error.errorCode}] ${error.message}",
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF7F1D1D),
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                        }
+                    } else if (currentVpnState is VpnState.Failed) {
+                        val failed = currentVpnState
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFFFEE2E2),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    text = "Failure Diagnostics:",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF991B1B)
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "[${failed.errorCode}] ${failed.message}",
                                     fontSize = 12.sp,
                                     color = Color(0xFF7F1D1D),
                                     fontFamily = FontFamily.Monospace

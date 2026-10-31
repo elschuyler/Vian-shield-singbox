@@ -19,9 +19,10 @@ android {
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-    // Dual-ARM architecture support: 32-bit ARM (armeabi-v7a) and 64-bit ARM (arm64-v8a)
+    // ARM64 architecture support: strictly 64-bit ARM (arm64-v8a) only
     ndk {
-      abiFilters.addAll(listOf("armeabi-v7a", "arm64-v8a"))
+      abiFilters.clear()
+      abiFilters.add("arm64-v8a")
     }
   }
 
@@ -72,6 +73,17 @@ android {
     buildConfig = true
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
+  packaging {
+    jniLibs {
+      excludes += listOf(
+        "lib/armeabi-v7a/**",
+        "lib/x86/**",
+        "lib/x86_64/**",
+        "lib/riscv64/**",
+        "lib/mips*/**"
+      )
+    }
+  }
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true

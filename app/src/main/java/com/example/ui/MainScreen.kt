@@ -120,8 +120,18 @@ fun MainScreen(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == android.app.Activity.RESULT_OK) {
+            com.example.logging.OperationalLogCatcher.info(
+                com.example.logging.LogCategory.VPN_LIFECYCLE,
+                "MainScreen",
+                "[${com.example.logging.OperationalLogCatcher.EVENT_VPN_PERMISSION_GRANTED}] User granted VPN permission in system dialog"
+            )
             viewModel.toggleVpn()
         } else {
+            com.example.logging.OperationalLogCatcher.warn(
+                com.example.logging.LogCategory.VPN_LIFECYCLE,
+                "MainScreen",
+                "[${com.example.logging.OperationalLogCatcher.EVENT_VPN_PERMISSION_DENIED}] User denied or dismissed VPN permission dialog"
+            )
             Toast.makeText(context, "VPN permission is required to create network tunnel", Toast.LENGTH_LONG).show()
         }
     }
@@ -441,6 +451,11 @@ fun MainScreen(
                 onToggle = {
                     val intent = viewModel.checkPermissionIntent()
                     if (intent != null) {
+                        com.example.logging.OperationalLogCatcher.info(
+                            com.example.logging.LogCategory.VPN_LIFECYCLE,
+                            "MainScreen",
+                            "[${com.example.logging.OperationalLogCatcher.EVENT_VPN_PERMISSION_REQUIRED}] VPN permission required; launching system dialog"
+                        )
                         vpnPermissionLauncher.launch(intent)
                     } else {
                         viewModel.toggleVpn()
@@ -566,47 +581,50 @@ fun MainScreen(
             )
 
             // Error Banner (shown if VPN is in Error state)
-            AnimatedVisibility(visible = vpnState is VpnState.Error) {
-                if (vpnState is VpnState.Error) {
-                    val errorState = vpnState as VpnState.Error
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFFFEE2E2)),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFCA5A5))
-                    ) {
-                        Column(modifier = Modifier.padding(14.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.Error,
-                                    contentDescription = null,
-                                    tint = StatusError,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "VPN Startup Failed",
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF991B1B),
-                                    fontSize = 14.sp
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = errorState.message,
-                                fontSize = 12.sp,
-                                color = Color(0xFF7F1D1D)
+            val currentVpn = vpnState
+            AnimatedVisibility(visible = currentVpn is VpnState.Failed) {
+                val (errorTitle, errorMsg) = when (currentVpn) {
+                    is VpnState.Error -> Pair("VPN Startup Failed", currentVpn.message)
+                    is VpnState.Failed -> Pair("Startup Failed (${currentVpn.errorCode})", currentVpn.message)
+                    else -> Pair("Error", "")
+                }
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFEE2E2)),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFCA5A5))
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Error,
+                                contentDescription = null,
+                                tint = StatusError,
+                                modifier = Modifier.size(20.dp)
                             )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            OutlinedButton(
-                                onClick = { onNavigate(AppScreen.DIAGNOSTICS) },
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = StatusError),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, StatusError),
-                                modifier = Modifier.align(Alignment.End)
-                            ) {
-                                Text("View Diagnostics", fontSize = 12.sp)
-                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = errorTitle,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF991B1B),
+                                fontSize = 14.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = errorMsg,
+                            fontSize = 12.sp,
+                            color = Color(0xFF7F1D1D)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = { onNavigate(AppScreen.DIAGNOSTICS) },
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = StatusError),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, StatusError),
+                            modifier = Modifier.align(Alignment.End)
+                        ) {
+                            Text("View Diagnostics", fontSize = 12.sp)
                         }
                     }
                 }
@@ -710,20 +728,23 @@ private fun PrimaryActionButton(
     onToggle: () -> Unit
 ) {
     val isConnected = vpnState is VpnState.Connected
-    val isTransitioning = vpnState is VpnState.Starting || vpnState is VpnState.Stopping
+    val isTransitioning = vpnState is VpnState.Starting || vpnState is VpnState.Stopping ||
+        vpnState is VpnState.StartRequested || vpnState is VpnState.PermissionRequired
 
     val iconColor = when {
         isConnected -> StatusConnected
         isTransitioning -> StatusStarting
-        vpnState is VpnState.Error -> StatusError
+        vpnState is VpnState.Error || vpnState is VpnState.Failed -> StatusError
         else -> Color(0xFF94A3B8)
     }
 
     val (statusLabel, statusTag) = when {
+        vpnState is VpnState.StartRequested -> "INITIALIZING" to "Requested"
+        vpnState is VpnState.PermissionRequired -> "AWAITING PERMISSION" to "Prompt"
         vpnState is VpnState.Starting -> "CONNECTING" to "Negotiating"
         vpnState is VpnState.Stopping -> "DISCONNECTING" to "Teardown"
         isConnected -> "WIREGUARD ACTIVE" to "Protected"
-        vpnState is VpnState.Error -> "PROTECTION ERROR" to "Failed"
+        vpnState is VpnState.Error || vpnState is VpnState.Failed -> "PROTECTION ERROR" to "Failed"
         else -> "WIREGUARD OFF" to "Standby"
     }
 
@@ -734,9 +755,11 @@ private fun PrimaryActionButton(
                 ?: "WireGuard Tunnel"
             "Tunneling through $endpoint"
         }
+        vpnState is VpnState.StartRequested -> "Requesting VPN start..."
+        vpnState is VpnState.PermissionRequired -> "VPN permission approval required"
         vpnState is VpnState.Starting -> "Establishing secure UDP tunnel..."
         vpnState is VpnState.Stopping -> "Stopping sing-box engine..."
-        vpnState is VpnState.Error -> "Failed to establish tunnel"
+        vpnState is VpnState.Failed -> "Startup failed: ${(vpnState as VpnState.Failed).message}"
         else -> "Tap power button to connect"
     }
 
@@ -882,8 +905,11 @@ private fun ConnectionStatusCard(
     val (statusColor, statusText, statusIcon) = when (vpnState) {
         is VpnState.Connected -> Triple(StatusConnected, "Protection Active", Icons.Default.CheckCircle)
         is VpnState.Starting -> Triple(StatusStarting, "Establishing Tunnel...", Icons.Default.HourglassEmpty)
+        is VpnState.StartRequested -> Triple(StatusStarting, "Requesting Start...", Icons.Default.HourglassEmpty)
+        is VpnState.PermissionRequired -> Triple(StatusStarting, "Awaiting Permission", Icons.Default.HourglassEmpty)
         is VpnState.Stopping -> Triple(StatusStarting, "Stopping Tunnel...", Icons.Default.HourglassEmpty)
         is VpnState.Error -> Triple(StatusError, "Protection Error", Icons.Default.Error)
+        is VpnState.Failed -> Triple(StatusError, "Startup Failed", Icons.Default.Error)
         is VpnState.Stopped -> Triple(StatusStopped, "Protection Inactive", Icons.Default.Stop)
     }
 
@@ -930,8 +956,11 @@ private fun ConnectionStatusCard(
             val subtitle = when (vpnState) {
                 is VpnState.Connected -> "WireGuard tunnel routing active on vianshield-tun"
                 is VpnState.Starting -> "Creating TUN interface and initializing native BoxService"
+                is VpnState.StartRequested -> "Requesting VPN background service..."
+                is VpnState.PermissionRequired -> "VPN permission approval required"
                 is VpnState.Stopping -> "Closing TUN descriptors and stopping BoxService"
                 is VpnState.Error -> vpnState.message
+                is VpnState.Failed -> "${vpnState.errorCode}: ${vpnState.message}"
                 is VpnState.Stopped -> "Ready to protect network connections"
             }
 

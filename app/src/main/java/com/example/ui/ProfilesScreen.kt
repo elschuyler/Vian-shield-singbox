@@ -385,8 +385,11 @@ private fun VpnHealthStatusCard(
     val (statusColor, statusText, statusIcon) = when (vpnState) {
         is VpnState.Connected -> Triple(StatusConnected, "Tunnel Connected", Icons.Default.CheckCircle)
         is VpnState.Starting -> Triple(StatusStarting, "Connecting...", Icons.Default.HourglassEmpty)
+        is VpnState.StartRequested -> Triple(StatusStarting, "Requesting...", Icons.Default.HourglassEmpty)
+        is VpnState.PermissionRequired -> Triple(StatusStarting, "Permission Required", Icons.Default.HourglassEmpty)
         is VpnState.Stopping -> Triple(StatusStarting, "Stopping...", Icons.Default.HourglassEmpty)
         is VpnState.Error -> Triple(StatusError, "Tunnel Error", Icons.Default.Error)
+        is VpnState.Failed -> Triple(StatusError, "Failed: ${vpnState.message}", Icons.Default.Error)
         is VpnState.Stopped -> Triple(StatusStopped, "Disconnected", Icons.Default.Stop)
     }
 

@@ -22,7 +22,9 @@ enum class LogCategory {
     CONFIG_VALIDATION,
     TUN_INTERFACE,
     NETWORK_STATE,
-    ERROR_DIAGNOSTIC
+    ERROR_DIAGNOSTIC,
+    CRASH,
+    PROCESS_EXIT
 }
 
 data class LogEvent(
@@ -44,12 +46,42 @@ data class LogEvent(
  *
  * Mandate & Privacy Guardrails:
  * 1. Master On/Off switch - when disabled, no logs are recorded.
- * 2. Strictly Bounded - caps in-memory retention to 500 entries (FIFO) and local disk log to 256KB.
+ * 2. Strictly Bounded - caps in-memory retention to 500 entries (FIFO) and local disk log to 3 MiB.
  * 3. Secret Redaction - strips private keys, preshared keys, and credentials before recording.
  * 4. Zero Fabricated Telemetry - captures ONLY genuine observable engine, tunnel, and network events.
  * 5. No PII, browsing history, or packet tracking.
  */
 object OperationalLogCatcher {
+
+    // Structured operational lifecycle event names (Mandated Phase 1.17 audit)
+    const val EVENT_START_BUTTON_TAPPED = "START_BUTTON_TAPPED"
+    const val EVENT_START_REQUESTED = "START_REQUESTED"
+    const val EVENT_VPN_PERMISSION_REQUIRED = "VPN_PERMISSION_REQUIRED"
+    const val EVENT_VPN_PERMISSION_GRANTED = "VPN_PERMISSION_GRANTED"
+    const val EVENT_VPN_PERMISSION_DENIED = "VPN_PERMISSION_DENIED"
+    const val EVENT_VPN_SERVICE_START_REQUESTED = "VPN_SERVICE_START_REQUESTED"
+    const val EVENT_VPN_SERVICE_CREATED = "VPN_SERVICE_CREATED"
+    const val EVENT_FOREGROUND_SERVICE_STARTED = "FOREGROUND_SERVICE_STARTED"
+    const val EVENT_NATIVE_LIBRARY_LOAD_STARTED = "NATIVE_LIBRARY_LOAD_STARTED"
+    const val EVENT_NATIVE_LIBRARY_LOAD_SUCCESS = "NATIVE_LIBRARY_LOAD_SUCCESS"
+    const val EVENT_LIBBOX_SETUP_STARTED = "LIBBOX_SETUP_STARTED"
+    const val EVENT_LIBBOX_SETUP_SUCCESS = "LIBBOX_SETUP_SUCCESS"
+    const val EVENT_CONFIG_GENERATION_STARTED = "CONFIG_GENERATION_STARTED"
+    const val EVENT_CONFIG_VALIDATION_SUCCESS = "CONFIG_VALIDATION_SUCCESS"
+    const val EVENT_CONFIG_VALIDATION_FAILED = "CONFIG_VALIDATION_FAILED"
+    const val EVENT_COMMAND_SERVER_START = "COMMAND_SERVER_START"
+    const val EVENT_TUN_OPEN_STARTED = "TUN_OPEN_STARTED"
+    const val EVENT_TUN_OPEN_SUCCESS = "TUN_OPEN_SUCCESS"
+    const val EVENT_PROTECT_SOCKET_STARTED = "PROTECT_SOCKET_STARTED"
+    const val EVENT_ENGINE_START_STARTED = "ENGINE_START_STARTED"
+    const val EVENT_ENGINE_START_SUCCESS = "ENGINE_START_SUCCESS"
+    const val EVENT_ENGINE_START_FAILED = "ENGINE_START_FAILED"
+    const val EVENT_VPN_CONNECTED = "VPN_CONNECTED"
+    const val EVENT_VPN_STOP_REQUESTED = "VPN_STOP_REQUESTED"
+    const val EVENT_VPN_STOPPED = "VPN_STOPPED"
+    const val EVENT_RESOURCE_CLEANUP = "RESOURCE_CLEANUP"
+    const val EVENT_UNCAUGHT_EXCEPTION = "UNCAUGHT_EXCEPTION"
+    const val EVENT_PROCESS_EXIT_DIAGNOSIS = "PROCESS_EXIT_DIAGNOSIS"
 
     const val MAX_MEMORY_ENTRIES = 500
     const val MAX_TOTAL_DISK_BYTES = 3 * 1024 * 1024L // 3 MiB strict persistent limit across all files
@@ -72,11 +104,17 @@ object OperationalLogCatcher {
 
     fun initialize(context: Context) {
         appContext = context.applicationContext
+        synchronized(this) {
+            val persisted = loadPersistedEvents(context)
+            if (persisted.isNotEmpty()) {
+                _events.value = persisted
+            }
+        }
         log(
             category = LogCategory.ENGINE_INIT,
             severity = LogSeverity.INFO,
             component = "LogCatcher",
-            message = "OperationalLogCatcher initialized (Memory bound: 500 entries | Persistent bound: 3 MiB rotating)"
+            message = "OperationalLogCatcher initialized (Restored ${_events.value.size} entries from disk | Memory bound: 500 entries | Persistent bound: 3 MiB rotating)"
         )
     }
 
@@ -180,7 +218,18 @@ object OperationalLogCatcher {
         sb.append("Current Persistent Usage: ").append(getDiskLogSizeBytes()).append(" bytes\n")
         sb.append("Master Switch State: ").append(if (_isLoggingEnabled.value) "ENABLED" else "DISABLED").append("\n")
         sb.append("Privacy Policy: All cryptographic private keys/secrets redacted. Zero browsing telemetry.\n")
-        sb.append("Phase 1 Reality: Per-app traffic decisions & DNS ad-blocking are not active in Phase 1.\n\n")
+        sb.append("Phase 1 Reality: Per-app traffic decisions & DNS ad-blocking are not active in Phase 1.\n")
+
+        val startupCtx = StartupContextTracker.getContext()
+        sb.append("\n=== LAST KNOWN STARTUP CONTEXT ===\n")
+        sb.append("Last Attempted Operation: ").append(startupCtx.lastAttemptedOperation).append("\n")
+        sb.append("Last Completed Operation: ").append(startupCtx.lastCompletedOperation).append("\n")
+        sb.append("VPN Permission Granted: ").append(startupCtx.vpnPermissionGranted).append("\n")
+        sb.append("VPN Service Created: ").append(startupCtx.vpnServiceCreated).append("\n")
+        sb.append("Native Engine Setup Completed: ").append(startupCtx.nativeEngineSetupCompleted).append("\n")
+        sb.append("TUN Interface Creation Completed: ").append(startupCtx.tunCreationCompleted).append("\n")
+        sb.append("Engine Start Completed: ").append(startupCtx.engineStartCompleted).append("\n")
+        sb.append("Checkpoint Timestamp: ").append(dateFormat.format(Date(startupCtx.timestamp))).append("\n\n")
 
         _events.value.forEach { e ->
             sb.append("[").append(dateFormat.format(Date(e.timestamp))).append("] ")
@@ -194,6 +243,33 @@ object OperationalLogCatcher {
             sb.append("\n")
         }
         return sb.toString()
+    }
+
+    private fun loadPersistedEvents(context: Context): List<LogEvent> {
+        val loaded = mutableListOf<LogEvent>()
+        try {
+            val active = File(context.filesDir, ACTIVE_LOG_FILE)
+            if (active.exists() && active.length() > 0) {
+                val lines = active.readLines(Charsets.UTF_8)
+                val relevantLines = if (lines.size > MAX_MEMORY_ENTRIES) lines.takeLast(MAX_MEMORY_ENTRIES) else lines
+                relevantLines.forEach { line ->
+                    parseLogLine(line)?.let { loaded.add(it) }
+                }
+            }
+        } catch (_: Throwable) {}
+        return loaded
+    }
+
+    private fun parseLogLine(line: String): LogEvent? {
+        val parts = line.split("|", limit = 6)
+        if (parts.size < 5) return null
+        val ts = parts[0].toLongOrNull() ?: return null
+        val sev = try { LogSeverity.valueOf(parts[1]) } catch (_: Throwable) { LogSeverity.INFO }
+        val cat = try { LogCategory.valueOf(parts[2]) } catch (_: Throwable) { LogCategory.VPN_LIFECYCLE }
+        val comp = parts[3]
+        val msg = parts[4]
+        val details = if (parts.size > 5 && parts[5].isNotEmpty()) parts[5] else null
+        return LogEvent(idCounter.getAndIncrement(), ts, cat, sev, comp, msg, details)
     }
 
     /**

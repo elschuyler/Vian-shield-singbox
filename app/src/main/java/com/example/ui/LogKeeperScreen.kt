@@ -456,7 +456,7 @@ fun LogKeeperScreen(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Memory: ${logEvents.size}/${rawEvents.size} (500 FIFO) | Disk: ${viewModel.getDiskLogSizeBytes()} B (Strict 3 MiB rotating limit). Redacts secrets. Note: Native C/Go fatal signals (SIGSEGV/SIGABRT) bypass JVM handlers and are logged in OS tombstones.",
+                        text = "Memory: ${logEvents.size}/${rawEvents.size} (500 FIFO) | Disk: ${viewModel.getDiskLogSizeBytes()} B (3 MiB limit). Redacts secrets. Native crashes & process exits are captured on launch via ApplicationExitInfo.",
                         style = MaterialTheme.typography.labelSmall,
                         fontSize = 10.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant

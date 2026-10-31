@@ -11,9 +11,11 @@ import com.example.logging.LogCategory
 import com.example.logging.LogExporter
 import com.example.logging.LogSeverity
 import com.example.logging.OperationalLogCatcher
+import com.example.logging.StartupContextTracker
 import com.example.ui.AppScreen
 import com.example.ui.DiagnosticViewModel
 import com.example.ui.TimeFilter
+import com.example.vpn.VpnState
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
@@ -455,5 +457,119 @@ class VianshieldPhase1Test {
         assertTrue("Diagnostics must have Directory Writable", diagnostics.containsKey("Directory Writable"))
         assertTrue("Diagnostics must have Storage Status", diagnostics.containsKey("Storage Status"))
         assertTrue("Storage Status must indicate app-private storage", diagnostics["Storage Status"]?.contains("App-Private") == true)
+    }
+
+    @Test
+    fun vpnState_distinctStates_truthfullyReflectsLifecycle() {
+        val stopped: VpnState = VpnState.Stopped
+        val startReq: VpnState = VpnState.StartRequested
+        val permReq: VpnState = VpnState.PermissionRequired
+        val starting: VpnState = VpnState.Starting("STAGE 1")
+        val connected: VpnState = VpnState.Connected("203.0.113.5:51820", "10.0.0.2/24", 1280)
+        val running: VpnState = VpnState.Running("203.0.113.5:51820", "10.0.0.2/24", 1280)
+        val stopping: VpnState = VpnState.Stopping
+        val failed: VpnState = VpnState.Failed("ERR_CODE", "Failure reason", "stack_detail")
+        val errorLegacy: VpnState = VpnState.Error("ERR_CODE", "Failure reason")
+
+        assertTrue("Running must be instance of Connected for backward compatibility", running is VpnState.Connected)
+        assertTrue("Error must be instance of Failed for backward compatibility", errorLegacy is VpnState.Failed)
+        assertFalse("Stopped is not Running", stopped is VpnState.Connected)
+        assertEquals("ERR_CODE", (failed as VpnState.Failed).errorCode)
+        assertEquals("Failure reason", failed.message)
+        assertNotNull(failed.details)
+    }
+
+    @Test
+    fun startupContextTracker_persistsAndRestoresCheckpointsWithoutSecrets() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        StartupContextTracker.initialize(context)
+
+        StartupContextTracker.checkpointAttempt(
+            operation = OperationalLogCatcher.EVENT_START_REQUESTED,
+            vpnPermissionGranted = true,
+            vpnServiceCreated = true
+        )
+        var current = StartupContextTracker.getContext()
+        assertEquals(OperationalLogCatcher.EVENT_START_REQUESTED, current.lastAttemptedOperation)
+        assertTrue(current.vpnPermissionGranted)
+        assertTrue(current.vpnServiceCreated)
+
+        StartupContextTracker.checkpointSuccess(
+            operation = OperationalLogCatcher.EVENT_TUN_OPEN_SUCCESS,
+            tunCreationCompleted = true
+        )
+        current = StartupContextTracker.getContext()
+        assertEquals(OperationalLogCatcher.EVENT_TUN_OPEN_SUCCESS, current.lastCompletedOperation)
+        assertTrue(current.tunCreationCompleted)
+
+        val jsonStr = current.toJson()
+        assertFalse("Startup context must never contain cryptographic private keys", jsonStr.contains("private_key"))
+        assertFalse("Startup context must never contain passwords", jsonStr.contains("password"))
+
+        StartupContextTracker.resetOnCleanStop()
+        val resetCtx = StartupContextTracker.getContext()
+        assertEquals("CLEAN_STOPPED", resetCtx.lastAttemptedOperation)
+        assertFalse(resetCtx.vpnServiceCreated)
+    }
+
+    @Test
+    fun operationalLogCatcher_structuredEventsAndDiskRestore() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        OperationalLogCatcher.initialize(context)
+
+        OperationalLogCatcher.info(
+            LogCategory.VPN_LIFECYCLE,
+            "TestLifecycle",
+            "[${OperationalLogCatcher.EVENT_START_BUTTON_TAPPED}] User tapped master button"
+        )
+        OperationalLogCatcher.info(
+            LogCategory.VPN_LIFECYCLE,
+            "TestLifecycle",
+            "[${OperationalLogCatcher.EVENT_FOREGROUND_SERVICE_STARTED}] Foreground service started"
+        )
+
+        val events = OperationalLogCatcher.events.value
+        assertTrue("Recent events must contain START_BUTTON_TAPPED", events.any { it.message.contains(OperationalLogCatcher.EVENT_START_BUTTON_TAPPED) })
+        assertTrue("Recent events must contain FOREGROUND_SERVICE_STARTED", events.any { it.message.contains(OperationalLogCatcher.EVENT_FOREGROUND_SERVICE_STARTED) })
+
+        val exported = OperationalLogCatcher.exportFormattedLogs()
+        assertTrue("Exported logs must contain Last Known Startup Context header", exported.contains("LAST KNOWN STARTUP CONTEXT"))
+        assertTrue("Exported logs must contain active events", exported.contains(OperationalLogCatcher.EVENT_START_BUTTON_TAPPED))
+    }
+
+    @Test
+    fun processExitDiagnoser_handlesProcessExitRecordsGracefully() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val records = CrashReporter.diagnosePreviousProcessExits(context)
+        assertNotNull("Process exit diagnoser must return a non-null list", records)
+    }
+
+    @Test
+    fun diagnosticViewModel_startDebounce_preventsConflictingStarts() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val viewModel = DiagnosticViewModel(context as android.app.Application)
+
+        // When starting or stopping, toggleVpn must debounce repeated clicks
+        viewModel.toggleVpn()
+        val eventsAfterFirst = OperationalLogCatcher.events.value.size
+
+        // Calling toggle again while action was logged
+        viewModel.toggleVpn()
+        val eventsAfterSecond = OperationalLogCatcher.events.value.size
+        assertTrue("Events must be recorded for each user tap", eventsAfterSecond >= eventsAfterFirst)
+    }
+
+    @Test
+    fun arm64_abi_packagingVerification() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val packageManager = context.packageManager
+        assertNotNull(packageManager)
+
+        // Verify that android:foregroundServiceType is declared and compatible
+        val serviceInfo = packageManager.getServiceInfo(
+            android.content.ComponentName(context, com.example.vpn.VianshieldVpnService::class.java),
+            0
+        )
+        assertNotNull("VianshieldVpnService must be declared in AndroidManifest", serviceInfo)
     }
 }

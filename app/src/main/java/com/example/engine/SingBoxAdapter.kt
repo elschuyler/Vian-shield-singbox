@@ -347,7 +347,11 @@ class SingBoxAdapter(
                 if (fd >= 0) {
                     val success = callback.autoDetectInterfaceControl(fd)
                     if (!success) {
-                        throw IllegalStateException("VpnService.protect(fd=$fd) failed; cannot protect outbound socket from VPN loop")
+                        OperationalLogCatcher.warn(
+                            LogCategory.NETWORK_STATE,
+                            "SingBoxAdapter",
+                            "VpnService.protect(fd=$fd) returned false (ignoring to prevent native JNI abort)"
+                        )
                     }
                 }
                 null // Go error returns null on success
@@ -375,15 +379,15 @@ class SingBoxAdapter(
             "closeDefaultInterfaceMonitor",
             "sendNotification" -> null
 
-            // 6. Shell, bridge, SFTP, and SSH stubs
+            // 6. Shell, bridge, SFTP, and SSH stubs (never throw across JNI bridge)
             "usePlatformShell" -> false
             "checkPlatformShell" -> false
-            "openShellSession" -> throw UnsupportedOperationException("Shell sessions are not supported on Android")
+            "openShellSession" -> null
             "usePlatformBridge" -> false
-            "createBridge" -> throw UnsupportedOperationException("Bridge mode is not supported on Android")
+            "createBridge" -> null
             "lookupUser" -> ""
-            "lookupSFTPServer" -> throw UnsupportedOperationException("SFTP is not supported on Android")
-            "readSystemSSHHostKey" -> throw UnsupportedOperationException("SSH host keys are not supported on Android")
+            "lookupSFTPServer" -> null
+            "readSystemSSHHostKey" -> null
             "findConnectionOwner" -> null
             "packageNameByUID" -> ""
             "uidByPackageName" -> -1
@@ -423,13 +427,16 @@ class SingBoxAdapter(
             }
             "getSystemProxyStatus" -> null
             "setSystemProxyEnabled" -> null
-            "triggerNativeCrash" -> throw RuntimeException("Native crash explicitly requested by CommandServer")
+            "triggerNativeCrash" -> {
+                OperationalLogCatcher.warn(LogCategory.ENGINE_INIT, "SingBoxAdapter", "Native core signaled triggerNativeCrash (ignored)")
+                null
+            }
             "writeDebugMessage" -> {
                 val msg = args?.firstOrNull()?.toString() ?: ""
                 callback.onLog("DEBUG", msg)
                 null
             }
-            "connectSSHAgent" -> throw UnsupportedOperationException("SSH agent is not supported on Android")
+            "connectSSHAgent" -> null
             "toString" -> "SingBoxCommandServerHandlerProxy"
             "hashCode" -> System.identityHashCode(this)
             "equals" -> args?.firstOrNull() === this

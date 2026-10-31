@@ -25,7 +25,7 @@ class VpnLifecycleController(private val context: Context) {
             OperationalLogCatcher.info(
                 LogCategory.VPN_LIFECYCLE,
                 "LifecycleController",
-                "Android VPN permission required. Prompting user consent dialog."
+                "[${OperationalLogCatcher.EVENT_VPN_PERMISSION_REQUIRED}] Android VPN permission required. Prompting consent dialog."
             )
             if (permissionLauncher != null) {
                 permissionLauncher.launch(prepareIntent)
@@ -43,12 +43,12 @@ class VpnLifecycleController(private val context: Context) {
         OperationalLogCatcher.info(
             LogCategory.VPN_LIFECYCLE,
             "LifecycleController",
-            "Starting VianshieldVpnService..."
+            "[${OperationalLogCatcher.EVENT_VPN_SERVICE_START_REQUESTED}] Starting VianshieldVpnService..."
         )
         val intent = VianshieldVpnService.startIntent(context, configContent)
         try {
             ContextCompat.startForegroundService(context, intent)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             OperationalLogCatcher.error(
                 LogCategory.VPN_LIFECYCLE,
                 "LifecycleController",
@@ -61,9 +61,17 @@ class VpnLifecycleController(private val context: Context) {
         OperationalLogCatcher.info(
             LogCategory.VPN_LIFECYCLE,
             "LifecycleController",
-            "Requesting VPN stop..."
+            "[${OperationalLogCatcher.EVENT_VPN_STOP_REQUESTED}] Requesting VPN stop..."
         )
         val intent = VianshieldVpnService.stopIntent(context)
-        context.startService(intent)
+        try {
+            context.startService(intent)
+        } catch (e: Throwable) {
+            OperationalLogCatcher.error(
+                LogCategory.VPN_LIFECYCLE,
+                "LifecycleController",
+                "Failed to stop VPN service: ${e.message}"
+            )
+        }
     }
 }
