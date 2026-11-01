@@ -1,0 +1,22 @@
+From 4005cc4b4d8211a9d2178c30c58853dd99dc66ef Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 01:49:34 +0530
+Subject: [PATCH 30/49] bitproxy: never commit signing keys
+
+---
+ .gitignore | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/.gitignore b/.gitignore
+index fdd4185..5f0b9ac 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -19,3 +19,5 @@ local.properties
+ *.conf.txt
+ singbox_profile.json
+ /local-profiles/
++*.keystore
++*.jks
+-- 
+2.56.0
+
