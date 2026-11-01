@@ -33,7 +33,7 @@
         </activity>
 
         <service
-            android:name=".vpn.VianshieldVpnService"
+            android:name="io.nekohasekai.sfa.bg.VPNService"
             android:exported="false"
             android:foregroundServiceType="specialUse"
             android:permission="android.permission.BIND_VPN_SERVICE">
