@@ -1,0 +1,14 @@
+# Upstream checkouts and build output (downloaded fresh by build-release.sh)
+/sing-box/
+/sing-box-for-android
+/build-work/
+setup.log
+# Never commit keys, WireGuard configs or personal files
+*.keystore
+*.jks
+local.properties
+*.conf
+*.conf.txt
+singbox_profile.json
+/reference/
+/sing-tun
