@@ -1,0 +1,27 @@
+From 065c9a01a053803d8b9903204bd737e6eb755643 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 23:37:14 +0530
+Subject: [PATCH 01/49] bitproxy: ignore WireGuard configs and personal
+ profiles
+
+---
+ .gitignore | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/.gitignore b/.gitignore
+index 0d61218..fdd4185 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -13,3 +13,9 @@ local.properties
+ /service-account-credentials.json
+ /CLAUDE.md
+ /.claude/
++
++# BitProxy: never commit real WireGuard configs or personal profiles
++*.conf
++*.conf.txt
++singbox_profile.json
++/local-profiles/
+-- 
+2.56.0
+
