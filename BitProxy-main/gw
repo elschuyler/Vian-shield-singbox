@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Gradle for the Android app, always with the /media/Absolute toolchain and caches.
+source /media/Absolute/dev/env.sh
+cd /home/zonic/BitProxy/sing-box/clients/android && exec ./gradlew "$@"
