@@ -118,18 +118,29 @@ jobs:
           echo "Relocation 315 check passed successfully! Linker is fully compatible with Cronet AArch64 C++ RTTI."
           rm -f /tmp/test_reloc315.cpp /tmp/libtest_reloc315.so
 
-      - name: 3. Build Native Engine for Android (build_libbox)
-        working-directory: sing-box-source
+      - name: 3. Apply BitProxy sing-tun and go-boottime Patches
         run: |
-          export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$(go env GOPATH)/bin:$PATH"
+          echo "=== 3. Applying BitProxy reliability patches ==="
+          mkdir -p /tmp/work
+          bash tools/build/prepare-sing-tun.sh sing-box-source /tmp/work
+          echo "=== Applying go-boottime deep sleep clock patch ==="
+          GO_BT=$(bash tools/build/go-boottime.sh /tmp/go-bt)
+          echo "GOROOT=$GO_BT" >> $GITHUB_ENV
+          echo "$GO_BT/bin" >> $GITHUB_PATH
+
+      - name: 4. Build Native Engine for Android (build_libbox)
+        run: |
+          export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$GOROOT/bin:$(go env GOPATH)/bin:$PATH"
           export GOTOOLCHAIN=local
-          echo "=== 3. Building libbox.aar via official build_libbox ==="
+          echo "=== 4. Cleaning pre-existing AAR and building libbox.aar ==="
+          rm -f app/libs/libbox.aar
+          cd sing-box-source
           go run ./cmd/internal/build_libbox -target android
           test -s libbox.aar || { echo "::error::sing-box-source/libbox.aar was not generated!"; exit 1; }
 
-      - name: 4. Verify ARM64 Native Binary in libbox.aar
+      - name: 5. Verify ARM64 Native Binary in libbox.aar
         run: |
-          echo "=== 4. Verifying ARM64 (arm64-v8a) native engine ==="
+          echo "=== 5. Verifying ARM64 (arm64-v8a) native engine ==="
           unzip -l sing-box-source/libbox.aar | grep "jni/arm64-v8a/libbox.so" || { echo "::error::Missing jni/arm64-v8a/libbox.so in libbox.aar!"; exit 1; }
           ARM64_SIZE=$(unzip -p sing-box-source/libbox.aar jni/arm64-v8a/libbox.so | wc -c)
           echo "ARM64 libbox.so size: $ARM64_SIZE bytes"
@@ -139,11 +150,11 @@ jobs:
           fi
           echo "ARM64 native binary successfully verified."
 
-      - name: 5. Package and Inspect libbox.aar
+      - name: 6. Package and Inspect libbox.aar
         run: |
-          echo "=== 5. Packaging and inspecting libbox.aar ==="
+          echo "=== 6. Packaging and inspecting libbox.aar ==="
           mkdir -p app/libs
-          cp sing-box-source/libbox.aar app/libs/libbox.aar
+          cp -f sing-box-source/libbox.aar app/libs/libbox.aar
           ls -lh app/libs/libbox.aar
           echo "--- JNI Native Library Listing ---"
           unzip -l app/libs/libbox.aar "jni/*"
@@ -151,21 +162,21 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: 6. Run Gradle Compilation and Unit Tests
+      - name: 7. Run Gradle Compilation and Unit Tests
         run: |
-          echo "=== 6. Running Gradle Unit Tests ==="
+          echo "=== 7. Running Gradle Unit Tests ==="
           gradle :app:testDebugUnitTest --stacktrace
 
-      - name: 7. Assemble ARM64 Debug APK
+      - name: 8. Assemble ARM64 Debug APK
         run: |
-          echo "=== 7. Assembling ARM64 Debug APK ==="
+          echo "=== 8. Assembling ARM64 Debug APK ==="
           mkdir -p dist
           gradle :app:assembleDebug --stacktrace
           cp app/build/outputs/apk/debug/app-debug.apk dist/vianshield-arm64-debug.apk
 
-      - name: 8. Verify ARM64-Only APK Packaging & Native ABIs
+      - name: 9. Verify ARM64-Only APK Packaging & Native ABIs
         run: |
-          echo "=== 8. Verifying staged ARM64-only APK in dist/ ==="
+          echo "=== 9. Verifying staged ARM64-only APK in dist/ ==="
           if [ ! -s dist/vianshield-arm64-debug.apk ]; then
             echo "::error::dist/vianshield-arm64-debug.apk does not exist or is empty!"
             ls -la app/build/outputs/apk/debug/ || echo "Directory app/build/outputs/apk/debug/ does not exist"
@@ -173,19 +184,22 @@ jobs:
           fi
           echo "=== Verifying native ABI contents in APK ==="
           unzip -l dist/vianshield-arm64-debug.apk "lib/*"
-          echo "--- Checking ARM64 presence ---"
+          echo "--- Checking ARM64 presence and size ---"
           unzip -l dist/vianshield-arm64-debug.apk | grep "lib/arm64-v8a/libbox.so" || { echo "::error::Missing arm64-v8a native library in APK!"; exit 1; }
+          LIBBOX_APK_SIZE=$(unzip -p dist/vianshield-arm64-debug.apk lib/arm64-v8a/libbox.so | wc -c)
+          echo "Verified libbox.so size in APK: $LIBBOX_APK_SIZE bytes"
+          if [ "$LIBBOX_APK_SIZE" -lt 1000000 ]; then
+            echo "::error::libbox.so in APK is smaller than 1MB ($LIBBOX_APK_SIZE bytes)! Packaging failed.";
+            exit 1;
+          fi
+          echo "--- Checking ARM64 ELF architecture ---"
+          unzip -p dist/vianshield-arm64-debug.apk lib/arm64-v8a/libbox.so > /tmp/apk_libbox.so
+          file /tmp/apk_libbox.so | grep -E "ELF 64-bit.*(ARM aarch64|aarch64)" || { echo "::error::libbox.so is not an ARM64 (aarch64) ELF binary!"; exit 1; }
+          rm -f /tmp/apk_libbox.so
           echo "--- Verifying NO non-ARM64 ABIs exist in APK ---"
-          if unzip -l dist/vianshield-arm64-debug.apk | grep "lib/armeabi-v7a/"; then
-            echo "::error::Found forbidden armeabi-v7a native library in ARM64-only APK!";
-            exit 1;
-          fi
-          if unzip -l dist/vianshield-arm64-debug.apk | grep "lib/x86/"; then
-            echo "::error::Found forbidden x86 native library in ARM64-only APK!";
-            exit 1;
-          fi
-          if unzip -l dist/vianshield-arm64-debug.apk | grep "lib/x86_64/"; then
-            echo "::error::Found forbidden x86_64 native library in ARM64-only APK!";
+          FORBIDDEN_ABIS=$(unzip -l dist/vianshield-arm64-debug.apk "lib/*" | awk '{print $4}' | grep '^lib/' | cut -d/ -f2 | grep -v '^arm64-v8a$' | sort -u || true)
+          if [ -n "$FORBIDDEN_ABIS" ]; then
+            echo "::error::Found forbidden non-ARM64 ABI directories in APK: $FORBIDDEN_ABIS";
             exit 1;
           fi
           echo "=== Native Library Size Breakdown in APK ==="
@@ -200,7 +214,7 @@ jobs:
           ls -laR app/build/outputs/ || true
           ls -la app/libs/ || true
 
-      - name: 9. Upload Single ARM64 Debug APK Artifact
+      - name: 10. Upload Single ARM64 Debug APK Artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:

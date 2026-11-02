@@ -1,0 +1,201 @@
+From 5c5310b1763facc5e42bbde510ddb03542474951 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 01:16:18 +0530
+Subject: [PATCH 22/49] bitproxy: server switcher on the dashboard
+
+Dashboard card listing the imported servers with their latency from
+sing-box's URL test ('85 ms', or 'No response' in red when a server is
+down). A test runs when the card opens with the VPN on, plus a refresh
+button; no background testing. Tapping a server switches to it (save +
+re-apply). The group subscription only runs while the card is shown.
+---
+ .../sfa/bitproxy/ui/DashboardAppsCard.kt      |   1 +
+ .../sfa/bitproxy/ui/DashboardServersCard.kt   | 164 ++++++++++++++++++
+ 2 files changed, 165 insertions(+)
+ create mode 100644 app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardServersCard.kt
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardAppsCard.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardAppsCard.kt
+index b96cc16..1c90977 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardAppsCard.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardAppsCard.kt
+@@ -52,6 +52,7 @@ import kotlinx.coroutines.withContext
+ /** Hook: BitProxy items at the top of the dashboard (one call in upstream DashboardScreen). */
+ fun LazyListScope.bitProxyDashboardItems(serviceStatus: Status) {
+     item { BitProxyStatusBadge(serviceStatus) }
++    item { DashboardServersCard(serviceStatus) }
+     item { DashboardAppsCard(serviceStatus) }
+ }
+ 
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardServersCard.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardServersCard.kt
+new file mode 100644
+index 0000000..e181b2d
+--- /dev/null
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardServersCard.kt
+@@ -0,0 +1,164 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++package io.nekohasekai.sfa.bitproxy.ui
++
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.size
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.outlined.Dns
++import androidx.compose.material.icons.outlined.Refresh
++import androidx.compose.material3.Card
++import androidx.compose.material3.CardDefaults
++import androidx.compose.material3.CircularProgressIndicator
++import androidx.compose.material3.Icon
++import androidx.compose.material3.IconButton
++import androidx.compose.material3.ListItem
++import androidx.compose.material3.ListItemDefaults
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.RadioButton
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.DisposableEffect
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.rememberCoroutineScope
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.unit.dp
++import io.nekohasekai.libbox.OutboundGroup
++import io.nekohasekai.sfa.bitproxy.BitProxyApplier
++import io.nekohasekai.sfa.bitproxy.BitProxyPrefs
++import io.nekohasekai.sfa.bitproxy.BitProxyStore
++import io.nekohasekai.sfa.bitproxy.StoredServer
++import io.nekohasekai.sfa.bitproxy.config.ConfigGenerator
++import io.nekohasekai.sfa.constant.Status
++import io.nekohasekai.sfa.utils.CommandClient
++import io.nekohasekai.sfa.utils.CommandTarget
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.delay
++import kotlinx.coroutines.launch
++import kotlinx.coroutines.withContext
++
++/** Latency of each server in the running "VPN" group, from sing-box's URL test. */
++private class GroupDelays : CommandClient.Handler {
++    var delays by mutableStateOf<Map<String, Int>>(emptyMap())
++    var selected by mutableStateOf<String?>(null)
++
++    override fun updateGroups(newGroups: MutableList<OutboundGroup>) {
++        val vpn = newGroups.firstOrNull { it.tag == ConfigGenerator.VPN } ?: return
++        val map = mutableMapOf<String, Int>()
++        val items = vpn.items
++        while (items.hasNext()) {
++            val item = items.next()
++            map[item.tag] = item.urlTestDelay
++        }
++        delays = map
++        selected = vpn.selected
++    }
++}
++
++/** Pick the active server and see which servers answer, without opening Settings. */
++@Composable
++fun DashboardServersCard(serviceStatus: Status) {
++    val scope = rememberCoroutineScope()
++    val running = serviceStatus == Status.Started
++    var servers by remember { mutableStateOf<List<StoredServer>?>(null) }
++    var chosen by remember { mutableStateOf(BitProxyPrefs.selectedServer) }
++    var testing by remember { mutableStateOf(false) }
++    var tested by remember { mutableStateOf(false) } // after a test, no delay means "no response"
++    var status by remember { mutableStateOf<String?>(null) }
++    val handler = remember { GroupDelays() }
++
++    LaunchedEffect(Unit) { servers = withContext(Dispatchers.IO) { BitProxyStore.servers() } }
++
++    // Group updates only while the dashboard shows this card and the VPN runs.
++    DisposableEffect(running) {
++        val client = CommandClient(scope, CommandClient.ConnectionType.Groups, handler, localOnly = true)
++        if (running) client.connect()
++        onDispose { client.disconnect() }
++    }
++
++    fun test() {
++        if (!running || testing) return
++        testing = true
++        scope.launch(Dispatchers.IO) {
++            runCatching { CommandTarget.standaloneClient().urlTest(ConfigGenerator.VPN) }
++            delay(8000) // results stream in through the group updates
++            withContext(Dispatchers.Main) {
++                testing = false
++                tested = true
++            }
++        }
++    }
++    LaunchedEffect(running) { if (running) test() }
++
++    val list = servers ?: return
++    if (list.isEmpty()) return
++    val active = list.firstOrNull { it.tag == (handler.selected ?: chosen) } ?: list.first()
++
++    Card(
++        modifier = Modifier.fillMaxWidth(),
++        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
++    ) {
++        Column(Modifier.padding(vertical = 8.dp)) {
++            Row(Modifier.padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
++                Icon(Icons.Outlined.Dns, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
++                Column(Modifier.weight(1f).padding(start = 12.dp)) {
++                    Text("Server", style = MaterialTheme.typography.titleMedium)
++                    Text(
++                        status ?: if (BitProxyPrefs.autoPick) "Auto-pick fastest is on" else active.tag,
++                        style = MaterialTheme.typography.bodySmall,
++                        color = MaterialTheme.colorScheme.onSurfaceVariant,
++                    )
++                }
++                if (testing) {
++                    CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
++                } else if (running) {
++                    IconButton(onClick = { test() }) { Icon(Icons.Outlined.Refresh, contentDescription = "Test latency") }
++                }
++            }
++            for (server in list) {
++                val delayMs = handler.delays[server.tag]
++                val latency = when {
++                    !running -> "Start the VPN to test"
++                    delayMs != null && delayMs > 0 -> "$delayMs ms"
++                    delayMs == null -> "Needs Apply (other tunnel address)"
++                    tested -> "No response"
++                    else -> "Not tested yet"
++                }
++                val down = running && tested && (delayMs == null || delayMs <= 0)
++                ListItem(
++                    headlineContent = { Text(server.tag) },
++                    supportingContent = {
++                        Text(
++                            latency,
++                            style = MaterialTheme.typography.bodySmall,
++                            color = if (down) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
++                        )
++                    },
++                    leadingContent = { RadioButton(selected = server.tag == active.tag, onClick = null) },
++                    modifier = Modifier.clickable(enabled = server.tag != active.tag) {
++                        chosen = server.tag
++                        BitProxyPrefs.selectedServer = server.tag
++                        status = "Switching to ${server.tag}…"
++                        scope.launch {
++                            status = when (val o = BitProxyApplier.apply(running)) {
++                                is BitProxyApplier.Outcome.Applied -> null
++                                is BitProxyApplier.Outcome.Failed -> "Not switched: ${o.message}"
++                            }
++                            handler.selected = null
++                        }
++                    },
++                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
++                )
++            }
++        }
++    }
++}
+-- 
+2.56.0
+

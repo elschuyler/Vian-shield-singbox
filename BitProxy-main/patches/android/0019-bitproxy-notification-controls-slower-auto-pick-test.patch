@@ -1,0 +1,211 @@
+From ea80cf5dc8eac30bff2cf62f9c1e1befba0389e8 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 00:57:09 +0530
+Subject: [PATCH 19/49] bitproxy: notification controls; slower auto-pick tests
+
+Notifications card on the BitProxy screen: turn new-app prompts on/off,
+turn the live speed in the VPN notification on/off (upstream setting),
+jump straight to the VPN notification's channel to hide it (the VPN
+keeps running), and to all notification settings. BitProxy's channels
+are now named 'VPN start errors' and 'New app prompts'.
+
+Auto-pick (urltest) tests servers every 10 minutes instead of 3; each
+test wakes the radio for every server.
+---
+ .../io/nekohasekai/sfa/bitproxy/AppWatcher.kt |  8 +-
+ .../nekohasekai/sfa/bitproxy/BitProxyPrefs.kt |  4 +
+ .../sfa/bitproxy/BitProxyServiceHooks.kt      |  2 +-
+ .../sfa/bitproxy/config/ConfigGenerator.kt    |  2 +
+ .../sfa/bitproxy/ui/BitProxyScreen.kt         |  1 +
+ .../sfa/bitproxy/ui/NotificationsCard.kt      | 87 +++++++++++++++++++
+ .../bitproxy/config/ConfigGeneratorTest.kt    |  1 +
+ 7 files changed, 102 insertions(+), 3 deletions(-)
+ create mode 100644 app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/NotificationsCard.kt
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/AppWatcher.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/AppWatcher.kt
+index 76a27e5..61a0fa8 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/AppWatcher.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/AppWatcher.kt
+@@ -51,7 +51,11 @@ object AppWatcher {
+             val key = AppKey(pkg, Uid.userId(Process.myUid()))
+             val chosen = BitProxyPrefs.apps.keys.any { it.packageName == pkg }
+             when (intent.action) {
+-                Intent.ACTION_PACKAGE_ADDED -> if (chosen) reapply("reinstalled $pkg") else scope.launch { ask(key) }
++                Intent.ACTION_PACKAGE_ADDED -> if (chosen) {
++                    reapply("reinstalled $pkg")
++                } else if (BitProxyPrefs.askNewApps) {
++                    scope.launch { ask(key) }
++                }
+                 Intent.ACTION_PACKAGE_REMOVED -> {
+                     notificationManager().cancel(pkg, 0)
+                     if (chosen) reapply("removed $pkg") // rule dropped, saved choice kept
+@@ -119,7 +123,7 @@ object AppWatcher {
+ 
+         val nm = notificationManager()
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+-            nm.createNotificationChannel(NotificationChannel(CHANNEL, "New apps", NotificationManager.IMPORTANCE_DEFAULT))
++            nm.createNotificationChannel(NotificationChannel(CHANNEL, "New app prompts", NotificationManager.IMPORTANCE_DEFAULT))
+         }
+         fun action(mode: Mode, requestCode: Int) = PendingIntent.getBroadcast(
+             Application.application,
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
+index 9e4daa7..35fe9f0 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
+@@ -52,6 +52,10 @@ object BitProxyPrefs {
+         get() = prefs.getBoolean("dashboard_apps_collapsed", false)
+         set(value) = prefs.edit { putBoolean("dashboard_apps_collapsed", value) }
+ 
++    var askNewApps: Boolean
++        get() = prefs.getBoolean("ask_new_apps", true)
++        set(value) = prefs.edit { putBoolean("ask_new_apps", value) }
++
+     var autoPick: Boolean
+         get() = prefs.getBoolean("auto_pick", false)
+         set(value) = prefs.edit { putBoolean("auto_pick", value) }
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
+index d230ec5..c94aa52 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
+@@ -89,7 +89,7 @@ object BitProxyServiceHooks {
+         try {
+             val nm = Application.notification
+             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+-                nm.createNotificationChannel(NotificationChannel(CHANNEL, "BitProxy alerts", NotificationManager.IMPORTANCE_HIGH))
++                nm.createNotificationChannel(NotificationChannel(CHANNEL, "VPN start errors", NotificationManager.IMPORTANCE_HIGH))
+             }
+             val text = when (type) {
+                 Alert.EmptyConfiguration -> "No profile to start. Open BitProxy and tap Apply."
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
+index 01b37ce..fe75e47 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
+@@ -174,6 +174,8 @@ object ConfigGenerator {
+                     put("tag", VPN)
+                     put("outbounds", buildJsonArray { group.forEach { add(tags[it]) } })
+                     if (!input.autoPick) put("default", tags[selectedIndex])
++                    // Each test wakes the radio for every server; 10 min instead of 3 saves battery.
++                    if (input.autoPick) put("interval", "10m")
+                     put("interrupt_exist_connections", true)
+                 }
+                 // A direct outbound must not have "detour" ("detour is not supported in direct context").
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt
+index 9169291..4285610 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt
+@@ -314,6 +314,7 @@ fun BitProxyScreen(navController: NavController, serviceStatus: Status) {
+                 }) { Text("Leak test (open in a VPN app, then a Direct app)") }
+             }
+         }
++        NotificationsCard()
+     }
+ 
+     message?.let {
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/NotificationsCard.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/NotificationsCard.kt
+new file mode 100644
+index 0000000..31495d7
+--- /dev/null
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/NotificationsCard.kt
+@@ -0,0 +1,87 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++package io.nekohasekai.sfa.bitproxy.ui
++
++import android.content.Intent
++import android.os.Build
++import android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS
++import android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS
++import android.provider.Settings.EXTRA_APP_PACKAGE
++import android.provider.Settings.EXTRA_CHANNEL_ID
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.padding
++import androidx.compose.material3.Card
++import androidx.compose.material3.CardDefaults
++import androidx.compose.material3.ListItem
++import androidx.compose.material3.ListItemDefaults
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.Switch
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.unit.dp
++import io.nekohasekai.sfa.bitproxy.BitProxyPrefs
++import io.nekohasekai.sfa.database.Settings
++
++/** Which notifications BitProxy shows, and shortcuts to hide them in system settings. */
++@Composable
++fun NotificationsCard() {
++    val context = LocalContext.current
++    var askNewApps by remember { mutableStateOf(BitProxyPrefs.askNewApps) }
++    var liveSpeed by remember { mutableStateOf(Settings.dynamicNotification) }
++
++    fun open(intent: Intent) = runCatching { context.startActivity(intent) }
++    val appNotifications = Intent(ACTION_APP_NOTIFICATION_SETTINGS).putExtra(EXTRA_APP_PACKAGE, context.packageName)
++
++    Card(
++        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
++        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
++    ) {
++        Text("Notifications", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp, 16.dp, 16.dp, 4.dp))
++        val toggle: @Composable (String, String, Boolean, (Boolean) -> Unit) -> Unit = { title, detail, checked, onChange ->
++            ListItem(
++                headlineContent = { Text(title) },
++                supportingContent = { Text(detail) },
++                trailingContent = { Switch(checked = checked, onCheckedChange = onChange) },
++                modifier = Modifier.clickable { onChange(!checked) },
++                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
++            )
++        }
++        toggle("Ask about new apps", "Notification when an app is installed: VPN or Direct?", askNewApps) {
++            askNewApps = it
++            BitProxyPrefs.askNewApps = it
++        }
++        toggle("Live speed in VPN notification", "Off: a static notification, no updates while the screen is on. Applies at the next VPN start.", liveSpeed) {
++            liveSpeed = it
++            Settings.dynamicNotification = it
++        }
++        ListItem(
++            headlineContent = { Text("Hide the VPN notification") },
++            supportingContent = {
++                Text("Android shows it while any VPN runs. Turning its category off hides it; the VPN keeps running.")
++            },
++            modifier = Modifier.clickable {
++                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++                    // "service" is upstream's channel for the running-VPN notification
++                    open(Intent(ACTION_CHANNEL_NOTIFICATION_SETTINGS).putExtra(EXTRA_APP_PACKAGE, context.packageName).putExtra(EXTRA_CHANNEL_ID, "service"))
++                        .onFailure { open(appNotifications) }
++                } else {
++                    open(appNotifications)
++                }
++            },
++            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
++        )
++        ListItem(
++            headlineContent = { Text("All notification settings") },
++            supportingContent = { Text("VPN start errors, new app prompts and the rest, each on its own. Keep \"VPN start errors\" on.") },
++            modifier = Modifier.clickable { open(appNotifications) },
++            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
++        )
++    }
++}
+diff --git a/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt b/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
+index 0890a65..aa5cdc8 100644
+--- a/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
++++ b/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
+@@ -144,6 +144,7 @@ class ConfigGeneratorTest {
+         val vpn = r.config["outbounds"]!!.jsonArray[0].jsonObject
+         assertEquals("urltest", vpn["type"]!!.jsonPrimitive.content)
+         assertFalse("default" in vpn) // urltest has no default
++        assertEquals("10m", vpn["interval"]!!.jsonPrimitive.content)
+         assertEquals(listOf("nl-free#1", "us-free-2"), vpn["outbounds"]!!.jsonArray.map { it.jsonPrimitive.content })
+     }
+ 
+-- 
+2.56.0
+

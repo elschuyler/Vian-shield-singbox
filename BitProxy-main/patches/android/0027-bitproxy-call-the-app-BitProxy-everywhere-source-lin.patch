@@ -1,0 +1,215 @@
+From ac599dfcb4480da9bd8f149b1e273280f3aa482c Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 01:31:52 +0530
+Subject: [PATCH 27/49] bitproxy: call the app BitProxy everywhere; source
+ link, no sponsor
+
+- VPN session name (shown by Android) and the notification title
+  fallback use the app name instead of 'sing-box'.
+- Four UI strings that named the app 'sing-box' are overridden in all
+  five languages from new resource files in the 'other' flavor, so the
+  upstream strings.xml files stay untouched.
+- About: 'Source Code' points to the BitProxy repository (GPLv3 requires
+  offering this modified version's source); 'Sponsor' is removed.
+sing-box is still named where it means the core engine (core version)
+and in the internal sing-box:// link scheme.
+---
+ .../nekohasekai/sfa/bg/ServiceNotification.kt |  4 +-
+ .../java/io/nekohasekai/sfa/bg/VPNService.kt  |  3 +-
+ .../nekohasekai/sfa/bitproxy/BitProxyInfo.kt  |  7 ++++
+ .../compose/screen/settings/SettingsScreen.kt | 37 +------------------
+ .../other/res/values-fa/bitproxy_names.xml    |  9 +++++
+ .../res/values-ru-rRU/bitproxy_names.xml      |  9 +++++
+ .../res/values-zh-rCN/bitproxy_names.xml      |  9 +++++
+ .../res/values-zh-rTW/bitproxy_names.xml      |  9 +++++
+ app/src/other/res/values/bitproxy_names.xml   |  9 +++++
+ 9 files changed, 57 insertions(+), 39 deletions(-)
+ create mode 100644 app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyInfo.kt
+ create mode 100644 app/src/other/res/values-fa/bitproxy_names.xml
+ create mode 100644 app/src/other/res/values-ru-rRU/bitproxy_names.xml
+ create mode 100644 app/src/other/res/values-zh-rCN/bitproxy_names.xml
+ create mode 100644 app/src/other/res/values-zh-rTW/bitproxy_names.xml
+ create mode 100644 app/src/other/res/values/bitproxy_names.xml
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bg/ServiceNotification.kt b/app/src/main/java/io/nekohasekai/sfa/bg/ServiceNotification.kt
+index c111d63..2904b0d 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bg/ServiceNotification.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bg/ServiceNotification.kt
+@@ -51,7 +51,7 @@ class ServiceNotification(private val status: MutableLiveData<Status>, private v
+ 
+     private val notificationBuilder by lazy {
+         NotificationCompat.Builder(service, notificationChannel).setShowWhen(false).setOngoing(true)
+-            .setContentTitle("sing-box").setOnlyAlertOnce(true)
++            .setContentTitle(service.getString(R.string.app_name)).setOnlyAlertOnce(true)
+             .setSmallIcon(R.drawable.ic_menu)
+             .setCategory(NotificationCompat.CATEGORY_SERVICE)
+             .setContentIntent(
+@@ -94,7 +94,7 @@ class ServiceNotification(private val status: MutableLiveData<Status>, private v
+         service.startForeground(
+             notificationId,
+             notificationBuilder
+-                .setContentTitle(lastProfileName.takeIf { it.isNotBlank() } ?: "sing-box")
++                .setContentTitle(lastProfileName.takeIf { it.isNotBlank() } ?: service.getString(R.string.app_name))
+                 .setContentText(service.getString(contentTextId)).build(),
+         )
+     }
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bg/VPNService.kt b/app/src/main/java/io/nekohasekai/sfa/bg/VPNService.kt
+index fad2b8f..cf663ba 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bg/VPNService.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bg/VPNService.kt
+@@ -10,6 +10,7 @@ import android.util.Log
+ import io.nekohasekai.libbox.Libbox
+ import io.nekohasekai.libbox.Notification
+ import io.nekohasekai.libbox.TunOptions
++import io.nekohasekai.sfa.R
+ import io.nekohasekai.sfa.database.Settings
+ import io.nekohasekai.sfa.ktx.toIpPrefix
+ import io.nekohasekai.sfa.ktx.toList
+@@ -60,7 +61,7 @@ class VPNService :
+ 
+         val builder =
+             Builder()
+-                .setSession("sing-box")
++                .setSession(getString(R.string.app_name))
+                 .setMtu(options.mtu)
+ 
+         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyInfo.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyInfo.kt
+new file mode 100644
+index 0000000..fe9aece
+--- /dev/null
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyInfo.kt
+@@ -0,0 +1,7 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++package io.nekohasekai.sfa.bitproxy
++
++object BitProxyInfo {
++    /** GPLv3: the About screen's "Source Code" must lead to this modified version's source. */
++    const val SOURCE_URL = "https://github.com/ZonicExists/BitProxy"
++}
+diff --git a/app/src/main/java/io/nekohasekai/sfa/compose/screen/settings/SettingsScreen.kt b/app/src/main/java/io/nekohasekai/sfa/compose/screen/settings/SettingsScreen.kt
+index 85e98e4..7500ae7 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/compose/screen/settings/SettingsScreen.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/compose/screen/settings/SettingsScreen.kt
+@@ -330,42 +330,7 @@ fun SettingsScreen(navController: NavController) {
+                         .clickable {
+                             val intent = android.content.Intent(android.content.Intent.ACTION_VIEW)
+                             intent.data =
+-                                android.net.Uri.parse("https://github.com/SagerNet/sing-box-for-android")
+-                            context.startActivity(intent)
+-                        },
+-                    colors =
+-                    ListItemDefaults.colors(
+-                        containerColor = Color.Transparent,
+-                    ),
+-                )
+-
+-                ListItem(
+-                    headlineContent = {
+-                        Text(
+-                            stringResource(R.string.sponsor),
+-                            style = MaterialTheme.typography.bodyLarge,
+-                        )
+-                    },
+-                    leadingContent = {
+-                        Icon(
+-                            imageVector = Icons.Outlined.Favorite,
+-                            contentDescription = null,
+-                            tint = MaterialTheme.colorScheme.primary,
+-                        )
+-                    },
+-                    trailingContent = {
+-                        Icon(
+-                            imageVector = Icons.AutoMirrored.Outlined.OpenInNew,
+-                            contentDescription = null,
+-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+-                        )
+-                    },
+-                    modifier =
+-                    Modifier
+-                        .clip(RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp))
+-                        .clickable {
+-                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW)
+-                            intent.data = android.net.Uri.parse("https://sekai.icu/sponsors/")
++                                android.net.Uri.parse(io.nekohasekai.sfa.bitproxy.BitProxyInfo.SOURCE_URL)
+                             context.startActivity(intent)
+                         },
+                     colors =
+diff --git a/app/src/other/res/values-fa/bitproxy_names.xml b/app/src/other/res/values-fa/bitproxy_names.xml
+new file mode 100644
+index 0000000..665e1c7
+--- /dev/null
++++ b/app/src/other/res/values-fa/bitproxy_names.xml
+@@ -0,0 +1,9 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<!-- BitProxy: overrides upstream strings that name the app "sing-box" (upstream files stay untouched). -->
++<resources>
++    <string name="notification_permission_required_description">بدون مجوز اعلان، BitProxy نمی‌تواند سرعت لحظه‌ای شبکه را نمایش دهد. لطفا پیش از شروع سرویس، مجوز را بدهید یا اعلان سرعت لحظه‌ای شبکه را غیرفعال کنید.</string>
++    <string name="error_invalid_configuration">پیکربندی BitProxy نامعتبر است: %s</string>
++    <string name="xposed_description">بهبود دسترسی ویژه برای BitProxy</string>
++    <string name="taildrop_open_app">باز کردن BitProxy</string>
++</resources>
+diff --git a/app/src/other/res/values-ru-rRU/bitproxy_names.xml b/app/src/other/res/values-ru-rRU/bitproxy_names.xml
+new file mode 100644
+index 0000000..a8226ca
+--- /dev/null
++++ b/app/src/other/res/values-ru-rRU/bitproxy_names.xml
+@@ -0,0 +1,9 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<!-- BitProxy: overrides upstream strings that name the app "sing-box" (upstream files stay untouched). -->
++<resources>
++    <string name="notification_permission_required_description">Без разрешения на отправку уведомлений BitProxy не сможет отображать скорость сети в реальном времени. Предоставьте разрешение или отключите уведомления о скорости перед запуском службы.</string>
++    <string name="error_invalid_configuration">Недопустимая конфигурация BitProxy: %s</string>
++    <string name="xposed_description">Привилегированное расширение для BitProxy</string>
++    <string name="taildrop_open_app">Открыть BitProxy</string>
++</resources>
+diff --git a/app/src/other/res/values-zh-rCN/bitproxy_names.xml b/app/src/other/res/values-zh-rCN/bitproxy_names.xml
+new file mode 100644
+index 0000000..2d6ac7f
+--- /dev/null
++++ b/app/src/other/res/values-zh-rCN/bitproxy_names.xml
+@@ -0,0 +1,9 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<!-- BitProxy: overrides upstream strings that name the app "sing-box" (upstream files stay untouched). -->
++<resources>
++    <string name="notification_permission_required_description">BitProxy 无法在没有发送通知权限的情况下显示实时网速。请授予权限或禁用实时网速通知后再启动服务。</string>
++    <string name="error_invalid_configuration">无效的 BitProxy 配置：%s</string>
++    <string name="xposed_description">BitProxy 的特权增强</string>
++    <string name="taildrop_open_app">打开 BitProxy</string>
++</resources>
+diff --git a/app/src/other/res/values-zh-rTW/bitproxy_names.xml b/app/src/other/res/values-zh-rTW/bitproxy_names.xml
+new file mode 100644
+index 0000000..0c2b389
+--- /dev/null
++++ b/app/src/other/res/values-zh-rTW/bitproxy_names.xml
+@@ -0,0 +1,9 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<!-- BitProxy: overrides upstream strings that name the app "sing-box" (upstream files stay untouched). -->
++<resources>
++    <string name="notification_permission_required_description">若未授予通知權限，BitProxy 無法顯示即時網速。請先授權，或關閉即時網速通知後再啟動服務。</string>
++    <string name="error_invalid_configuration">無效的 BitProxy 設定：%s</string>
++    <string name="xposed_description">BitProxy 的特權強化</string>
++    <string name="taildrop_open_app">開啟 BitProxy</string>
++</resources>
+diff --git a/app/src/other/res/values/bitproxy_names.xml b/app/src/other/res/values/bitproxy_names.xml
+new file mode 100644
+index 0000000..fe39fc4
+--- /dev/null
++++ b/app/src/other/res/values/bitproxy_names.xml
+@@ -0,0 +1,9 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<!-- BitProxy: overrides upstream strings that name the app "sing-box" (upstream files stay untouched). -->
++<resources>
++    <string name="notification_permission_required_description">BitProxy is unable to show real-time network speeds without the permission to send notifications. Please grant the permission or disable real-time network speeds notification before starting the service.</string>
++    <string name="error_invalid_configuration">Invalid BitProxy configuration: %s</string>
++    <string name="taildrop_open_app">Open BitProxy</string>
++    <string name="xposed_description">Privileged Enhancement for BitProxy</string>
++</resources>
+-- 
+2.56.0
+

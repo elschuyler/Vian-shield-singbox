@@ -1,0 +1,264 @@
+From 98f26babbfc79127676231e751e9feed8d420352 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 00:29:44 +0530
+Subject: [PATCH 11/49] bitproxy: automatic IPv6 mode; fix cold-start race with
+ libbox setup
+
+Automatic IPv6 mode: while the VPN runs, watch the underlying network
+(upstream DefaultNetworkListener). With a global IPv6 address and an
+IPv6 default route, the TUN gets the server's IPv6 tunnel address and
+DNS uses prefer_ipv4; otherwise IPv4-only. Changes are debounced (5 s)
+and re-applied at most every 30 s, so flapping networks can't cause a
+restart loop.
+
+Cold-start race (upstream): Application runs Libbox.setup() in a
+background job, but a system start (Always-on, boot) can create the
+command server first. sing-box then fails with 'open cache.db:
+read-only file system' or retries past the 10 s foreground deadline and
+the process is killed. The service now waits (max 8 s) for setup before
+creating the command server. Verified 10/10 cold starts and reboots.
+
+Upstream hooks: 1 line in Application, 3 in BoxService.
+---
+ .../java/io/nekohasekai/sfa/Application.kt    |  2 +
+ .../java/io/nekohasekai/sfa/bg/BoxService.kt  |  2 +
+ .../sfa/bitproxy/BitProxyApplier.kt           |  3 +-
+ .../nekohasekai/sfa/bitproxy/BitProxyPrefs.kt |  5 ++
+ .../sfa/bitproxy/BitProxyServiceHooks.kt      | 13 +++
+ .../nekohasekai/sfa/bitproxy/Ipv6Watcher.kt   | 85 +++++++++++++++++++
+ .../sfa/bitproxy/Ipv6DetectTest.kt            | 21 +++++
+ 7 files changed, 130 insertions(+), 1 deletion(-)
+ create mode 100644 app/src/main/java/io/nekohasekai/sfa/bitproxy/Ipv6Watcher.kt
+ create mode 100644 app/src/test/java/io/nekohasekai/sfa/bitproxy/Ipv6DetectTest.kt
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/Application.kt b/app/src/main/java/io/nekohasekai/sfa/Application.kt
+index a02aac1..68004b5 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/Application.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/Application.kt
+@@ -19,6 +19,7 @@ import io.nekohasekai.sfa.bg.CrashReportManager
+ import io.nekohasekai.sfa.bg.OOMReportManager
+ import io.nekohasekai.sfa.bg.PowerReportManager
+ import io.nekohasekai.sfa.bg.UpdateProfileWork
++import io.nekohasekai.sfa.bitproxy.BitProxyServiceHooks
+ import io.nekohasekai.sfa.compose.screen.tools.TaildropFiles
+ import io.nekohasekai.sfa.constant.Bugs
+ import io.nekohasekai.sfa.database.Settings
+@@ -72,6 +73,7 @@ class Application : Application() {
+             }.onFailure {
+                 Log.w("Application", "setup libbox: ${it.message}")
+             }
++            BitProxyServiceHooks.libboxReady.complete(Unit)
+             UpdateProfileWork.reconfigureUpdater()
+             HookModuleUpdateNotifier.sync(this@Application)
+             TaildropFiles.cleanCache()
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bg/BoxService.kt b/app/src/main/java/io/nekohasekai/sfa/bg/BoxService.kt
+index d208f57..0c48047 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bg/BoxService.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bg/BoxService.kt
+@@ -186,6 +186,7 @@ class BoxService(private val service: Service, private val platformInterface: Pl
+             }
+ 
+             status.postValue(Status.Started)
++            BitProxyServiceHooks.onStarted()
+             withContext(Dispatchers.Main) {
+                 notification.show(lastProfileName, R.string.status_started)
+             }
+@@ -302,6 +303,7 @@ class BoxService(private val service: Service, private val platformInterface: Pl
+                 fileDescriptor = null
+             }
+             DefaultNetworkMonitor.stop()
++            BitProxyServiceHooks.onStopped()
+             closeService()
+             commandServer.apply {
+                 close()
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
+index 1f7c889..da2954e 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
+@@ -40,7 +40,7 @@ object BitProxyApplier {
+     val hasPrevious: Boolean get() = previousFile.isFile
+ 
+     /** [serviceRunning]: reload the running service; otherwise just save and select. */
+-    suspend fun apply(serviceRunning: Boolean, ipv6: Boolean = false): Outcome = lock.withLock {
++    suspend fun apply(serviceRunning: Boolean, ipv6: Boolean = Ipv6Watcher.current()): Outcome = lock.withLock {
+         withContext(Dispatchers.IO) {
+             val outcome = try {
+                 applyLocked(serviceRunning, ipv6)
+@@ -78,6 +78,7 @@ object BitProxyApplier {
+         val profile = ensureProfile()
+         val file = File(profile.typed.path)
+         val old = file.takeIf { it.isFile }?.readText()
++        BitProxyPrefs.appliedIpv6 = result.ipv6
+         if (old == json) return Outcome.Applied(result, activate(profile, serviceRunning))
+         if (old != null && old != "{}") previousFile.writeText(old)
+         writeAtomically(file, json)
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
+index 15f1178..e3b7c35 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
+@@ -38,6 +38,11 @@ object BitProxyPrefs {
+         }.toMap()
+         set(value) = prefs.edit { putStringSet("apps", value.map { (k, m) -> "$k=${m.name}" }.toSet()) }
+ 
++    /** IPv6 mode of the config that is currently applied. */
++    var appliedIpv6: Boolean
++        get() = prefs.getBoolean("applied_ipv6", false)
++        set(value) = prefs.edit { putBoolean("applied_ipv6", value) }
++
+     var autoPick: Boolean
+         get() = prefs.getBoolean("auto_pick", false)
+         set(value) = prefs.edit { putBoolean("auto_pick", value) }
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
+index 65dbd5d..e8e6288 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
+@@ -43,6 +43,9 @@ object BitProxyServiceHooks {
+         if (alwaysOn(serviceRunning = true)?.lockdown == true) pendingStop.value = stop else stop()
+     }
+ 
++    /** Completed by Application once Libbox.setup() ran (it runs async in upstream). */
++    val libboxReady = kotlinx.coroutines.CompletableDeferred<Unit>()
++
+     /**
+      * Before the service reads the selected profile. When the system starts us (Always-on,
+      * boot, restart) and no usable profile is selected, fall back to the BitProxy profile.
+@@ -60,8 +63,18 @@ object BitProxyServiceHooks {
+         }
+     }
+ 
++    /** The VPN is up: start watching the underlying network for IPv6 changes. */
++    fun onStarted() {
++        Ipv6Watcher.start()
++    }
++
++    fun onStopped() {
++        Ipv6Watcher.stop()
++    }
++
+     /** The service stopped with an error: tell the user even if the UI is closed. */
+     fun onStartFailed(type: Alert, message: String?) {
++        onStopped()
+         try {
+             val nm = Application.notification
+             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/Ipv6Watcher.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/Ipv6Watcher.kt
+new file mode 100644
+index 0000000..6a993fe
+--- /dev/null
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/Ipv6Watcher.kt
+@@ -0,0 +1,85 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++package io.nekohasekai.sfa.bitproxy
++
++import android.net.ConnectivityManager
++import android.net.LinkProperties
++import android.net.Network
++import android.util.Log
++import io.nekohasekai.sfa.Application
++import io.nekohasekai.sfa.bg.DefaultNetworkListener
++import io.nekohasekai.sfa.database.Settings
++import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.Job
++import kotlinx.coroutines.SupervisorJob
++import kotlinx.coroutines.delay
++import kotlinx.coroutines.launch
++import java.net.Inet6Address
++import java.net.InetAddress
++
++/** Pure IPv6 check, unit tested. */
++object Ipv6Detect {
++    /** A global unicast IPv6 address (2000::/3) plus an IPv6 default route. */
++    fun hasGlobalIpv6(addresses: List<InetAddress>, hasIpv6DefaultRoute: Boolean): Boolean = hasIpv6DefaultRoute &&
++        addresses.any { it is Inet6Address && (it.address[0].toInt() and 0xe0) == 0x20 }
++
++    fun hasGlobalIpv6(lp: LinkProperties?): Boolean {
++        lp ?: return false
++        return hasGlobalIpv6(
++            lp.linkAddresses.map { it.address },
++            lp.routes.any { it.isDefaultRoute && it.destination.address is Inet6Address },
++        )
++    }
++}
++
++/**
++ * Automatic IPv6 mode: while the VPN runs, watch the underlying network (not the VPN) and
++ * re-apply the config when global IPv6 appears or disappears. Debounced so Wi-Fi/mobile
++ * flapping can't cause a restart loop.
++ */
++object Ipv6Watcher {
++    private const val TAG = "BitProxy"
++    private const val DEBOUNCE_MS = 5_000L
++    private const val MIN_INTERVAL_MS = 30_000L
++
++    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
++    private var pending: Job? = null
++    private var lastApply = 0L
++
++    /** Last seen state of the underlying network; null when unknown. */
++    @Volatile var hasIpv6: Boolean? = null
++        private set
++
++    /** For Apply from the UI: the watcher's value while running, else the current default network. */
++    fun current(): Boolean = hasIpv6 ?: runCatching {
++        val cm = Application.application.getSystemService(ConnectivityManager::class.java)
++        Ipv6Detect.hasGlobalIpv6(cm.getLinkProperties(cm.activeNetwork))
++    }.getOrDefault(false)
++
++    fun start() = scope.launch {
++        DefaultNetworkListener.start(this@Ipv6Watcher) { network -> onNetwork(network) }
++    }
++
++    fun stop() = scope.launch {
++        pending?.cancel()
++        hasIpv6 = null
++        DefaultNetworkListener.stop(this@Ipv6Watcher)
++    }
++
++    private fun onNetwork(network: Network?) {
++        pending?.cancel()
++        pending = scope.launch {
++            delay(DEBOUNCE_MS) // settle: IPv6 addresses often arrive a few seconds after the network
++            val cm = Application.application.getSystemService(ConnectivityManager::class.java)
++            val now = network != null && Ipv6Detect.hasGlobalIpv6(cm.getLinkProperties(network))
++            hasIpv6 = now
++            if (now == BitProxyPrefs.appliedIpv6) return@launch
++            if (Settings.selectedProfile != BitProxyPrefs.profileId) return@launch // not our profile running
++            val wait = lastApply + MIN_INTERVAL_MS - System.currentTimeMillis()
++            if (wait > 0) delay(wait)
++            lastApply = System.currentTimeMillis()
++            Log.i(TAG, "underlying network IPv6 changed to $now; re-applying")
++            BitProxyApplier.apply(serviceRunning = true, ipv6 = now)
++        }
++    }
++}
+diff --git a/app/src/test/java/io/nekohasekai/sfa/bitproxy/Ipv6DetectTest.kt b/app/src/test/java/io/nekohasekai/sfa/bitproxy/Ipv6DetectTest.kt
+new file mode 100644
+index 0000000..07aa0ec
+--- /dev/null
++++ b/app/src/test/java/io/nekohasekai/sfa/bitproxy/Ipv6DetectTest.kt
+@@ -0,0 +1,21 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++package io.nekohasekai.sfa.bitproxy
++
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertTrue
++import org.junit.Test
++import java.net.InetAddress
++
++class Ipv6DetectTest {
++    private fun a(vararg s: String) = s.map { InetAddress.getByName(it) } // literals only, no DNS
++
++    @Test fun wifiWithoutIpv6() = assertFalse(Ipv6Detect.hasGlobalIpv6(a("192.168.1.20", "fe80::1"), false))
++
++    @Test fun dualStack() = assertTrue(Ipv6Detect.hasGlobalIpv6(a("192.168.1.20", "2001:db8:1::20", "fe80::1"), true))
++
++    @Test fun ipv6OnlyMobile464xlat() = assertTrue(Ipv6Detect.hasGlobalIpv6(a("2a02:8108::5", "192.0.0.4"), true))
++
++    @Test fun linkLocalAndUlaDoNotCount() = assertFalse(Ipv6Detect.hasGlobalIpv6(a("fe80::1", "fd00::5"), true))
++
++    @Test fun globalAddressWithoutDefaultRoute() = assertFalse(Ipv6Detect.hasGlobalIpv6(a("2001:db8::5"), false))
++}
+-- 
+2.56.0
+

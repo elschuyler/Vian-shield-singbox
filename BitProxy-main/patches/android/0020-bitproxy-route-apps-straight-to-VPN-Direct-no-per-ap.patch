@@ -1,0 +1,164 @@
+From b696b4f98136bc515f3b67ab8785b628c89238ca Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 01:00:07 +0530
+Subject: [PATCH 20/49] bitproxy: route apps straight to VPN/Direct, no per-app
+ groups
+
+conf-merger.py made one selector per app so apps could be switched in
+the Groups tab. BitProxy switches apps from its own UI and re-applies,
+which also keeps each app's DNS rule in sync; a live switch in Groups
+did not. The per-app selectors are gone: app rules point at VPN or
+Direct, and Groups only shows the server group.
+Golden tests still compare against the script's real output, with the
+per-app selectors folded into their defaults.
+---
+ .../sfa/bitproxy/config/ConfigGenerator.kt    | 35 +++------------
+ .../bitproxy/config/ConfigGeneratorTest.kt    | 43 ++++++++++++++-----
+ 2 files changed, 40 insertions(+), 38 deletions(-)
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
+index fe75e47..f31a935 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
+@@ -110,18 +110,12 @@ object ConfigGenerator {
+ 
+         val dnsServer: IpAddress = selected.ipv4Dns!! // the parser rejects configs without DNS
+ 
+-        // Tags must be unique across all outbounds/endpoints.
+-        val usedTags = (tags + VPN + DIRECT).toMutableSet()
+-        val routes = input.apps.filter { it.uids.isNotEmpty() }.map { app ->
+-            var tag = app.label
+-            if (tag in usedTags) tag = "${app.label} (${app.packageName})"
+-            var n = 2
+-            while (tag in usedTags) tag = "${app.label} (${app.packageName}) ${n++}"
+-            usedTags += tag
+-            tag to app
+-        }
++        // Apps route straight to VPN / Direct. The script also made one selector per app, but
++        // switching is done in BitProxy (which re-applies, so DNS rules follow) and the
++        // selectors only cluttered the Groups tab.
++        val routes = input.apps.filter { it.uids.isNotEmpty() }
+         val domains = input.vpnDomains.map { it.trim().trimStart('.').lowercase() }.filter { it.isNotEmpty() }.distinct()
+-        val vpnUids = routes.filter { it.second.viaVpn }.flatMap { it.second.uids }.distinct().sorted()
++        val vpnUids = routes.filter { it.viaVpn }.flatMap { it.uids }.distinct().sorted()
+ 
+         val config = buildJsonObject {
+             putJsonObject("log") { put("level", "warn") }
+@@ -183,21 +177,6 @@ object ConfigGenerator {
+                     put("type", "direct")
+                     put("tag", DIRECT)
+                 }
+-                for ((tag, app) in routes) {
+-                    addJsonObject {
+-                        put("type", "selector")
+-                        put("tag", tag)
+-                        put(
+-                            "outbounds",
+-                            buildJsonArray {
+-                                add(VPN)
+-                                add(DIRECT)
+-                            },
+-                        )
+-                        put("default", if (app.viaVpn) VPN else DIRECT)
+-                        put("interrupt_exist_connections", true)
+-                    }
+-                }
+             }
+             putJsonObject("route") {
+                 put("auto_detect_interface", true)
+@@ -210,10 +189,10 @@ object ConfigGenerator {
+                     // user_id, not package_name: package rules did not match on OxygenOS.
+                     // No "sniff" before the VPN app rules: it stopped pre-match and stalled TCP.
+                     // With a VPN domain list, sniffing happens only after them, for Direct apps.
+-                    fun appRules(filter: (AppRoute) -> Boolean) = routes.filter { filter(it.second) }.forEach { (tag, app) ->
++                    fun appRules(filter: (AppRoute) -> Boolean) = routes.filter(filter).forEach { app ->
+                         addJsonObject {
+                             put("user_id", intArray(app.uids.sorted()))
+-                            put("outbound", tag)
++                            put("outbound", if (app.viaVpn) VPN else DIRECT)
+                         }
+                     }
+                     if (domains.isEmpty()) {
+diff --git a/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt b/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
+index aa5cdc8..79330f0 100644
+--- a/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
++++ b/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
+@@ -34,7 +34,28 @@ class ConfigGeneratorTest {
+             }
+         }
+ 
+-    private fun expected(case: String) = Json.parseToJsonElement(File(golden, "$case/expected.json").readText())
++    /**
++     * The script's real output, with its one deliberate difference applied: the script made a
++     * selector per app and routed to it; BitProxy routes straight to that selector's default.
++     */
++    private fun expected(case: String): JsonObject {
++        val script = Json.parseToJsonElement(File(golden, "$case/expected.json").readText()).jsonObject
++        val outbounds = script["outbounds"]!!.jsonArray.map { it.jsonObject }
++        val appSelectors = outbounds.drop(2).associate { it["tag"]!!.jsonPrimitive.content to it["default"]!! }
++        val rules = script["route"]!!.jsonObject["rules"]!!.jsonArray.map { rule ->
++            val out = rule.jsonObject["outbound"]?.jsonPrimitive?.content
++            if (out in appSelectors) JsonObject(rule.jsonObject + ("outbound" to appSelectors[out]!!)) else rule
++        }
++        return JsonObject(
++            script + mapOf(
++                "outbounds" to JsonArray(outbounds.take(2)),
++                "route" to JsonObject(script["route"]!!.jsonObject + ("rules" to JsonArray(rules))),
++            ),
++        )
++    }
++
++    private fun outboundOf(r: GenerateResult.Ok, uid: Int) = r.config["route"]!!.jsonObject["rules"]!!.jsonArray.map { it.jsonObject }
++        .first { rule -> rule["user_id"]?.jsonArray?.any { it.jsonPrimitive.content.toInt() == uid } == true }["outbound"]!!.jsonPrimitive.content
+ 
+     private fun ok(input: GeneratorInput): GenerateResult.Ok = when (val r = ConfigGenerator.generate(input)) {
+         is GenerateResult.Ok -> r
+@@ -98,25 +119,26 @@ class ConfigGeneratorTest {
+         val r = ok(GeneratorInput(servers("two-servers"), null, apps))
+         val dnsUids = r.config["dns"]!!.jsonObject["rules"]!!.jsonArray[0].jsonObject["user_id"]!!.jsonArray.map { it.jsonPrimitive.content.toInt() }
+         assertFalse(10123 in dnsUids)
+-        val firefox = r.config["outbounds"]!!.jsonArray.first { it.jsonObject["tag"]!!.jsonPrimitive.content == "Firefox" }.jsonObject
+-        assertEquals("Direct", firefox["default"]!!.jsonPrimitive.content)
++        assertEquals("Direct", outboundOf(r, 10123)) // Firefox
++        assertEquals("VPN", outboundOf(r, 10150))
+ 
+         // All Direct: no DNS rule at all (an empty user_id list would be invalid).
+         val allDirect = ok(GeneratorInput(servers("two-servers"), null, apps.map { it.copy(viaVpn = false) }))
+         assertEquals(JsonArray(emptyList()), allDirect.config["dns"]!!.jsonObject["rules"])
+     }
+ 
+-    @Test fun uninstalledAppsAreSkippedAndDuplicateLabelsGetUniqueTags() {
++    @Test fun uninstalledAppsAreSkippedAndNoPerAppGroups() {
+         val apps = listOf(
+             AppRoute("Chat", "a.chat", listOf(10001), true),
+-            AppRoute("Chat", "b.chat", listOf(10002), true),
+-            AppRoute("Direct", "c.weird", listOf(10003), true), // must not clash with the Direct outbound
++            AppRoute("Direct", "c.weird", listOf(10003), false), // a label can't clash with anything
+             AppRoute("Gone", "d.gone", emptyList(), true),
+         )
+         val r = ok(GeneratorInput(servers("two-servers"), null, apps))
+         val tags = r.config["outbounds"]!!.jsonArray.map { it.jsonObject["tag"]!!.jsonPrimitive.content }
+-        assertEquals(listOf("VPN", "Direct", "Chat", "Chat (b.chat)", "Direct (c.weird)"), tags)
+-        assertEquals(3, r.appRuleCount)
++        assertEquals(listOf("VPN", "Direct"), tags) // the Groups tab only shows the server group
++        assertEquals(2, r.appRuleCount)
++        assertEquals("VPN", outboundOf(r, 10001))
++        assertEquals("Direct", outboundOf(r, 10003))
+     }
+ 
+     @Test fun ipv6Mode() {
+@@ -154,8 +176,9 @@ class ConfigGeneratorTest {
+         val rules = r.config["route"]!!.jsonObject["rules"]!!.jsonArray.map { it.jsonObject }
+         val sniff = rules.indexOfFirst { it["action"]?.jsonPrimitive?.content == "sniff" }
+         val domain = rules.indexOfFirst { "domain_suffix" in it }
+-        val firefox = rules.indexOfFirst { it["outbound"]?.jsonPrimitive?.content == "Firefox" }
+-        val lastVpnApp = rules.indexOfLast { it["outbound"]?.jsonPrimitive?.content?.startsWith("Discord") == true }
++        fun ruleFor(uid: Int) = rules.indexOfFirst { r -> r["user_id"]?.jsonArray?.any { it.jsonPrimitive.content.toInt() == uid } == true }
++        val firefox = ruleFor(10123)
++        val lastVpnApp = ruleFor(99910160) // Discord (Clone), last VPN app
+         assertTrue(lastVpnApp < sniff && sniff < domain && domain < firefox)
+         assertEquals("VPN", rules[domain]["outbound"]!!.jsonPrimitive.content)
+         assertEquals(listOf("example.com"), rules[domain]["domain_suffix"]!!.jsonArray.map { it.jsonPrimitive.content })
+-- 
+2.56.0
+

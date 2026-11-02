@@ -1,0 +1,221 @@
+From 0480075b7b856093342dfe08c5f6bde5f5fe5c9d Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 00:41:52 +0530
+Subject: [PATCH 15/49] bitproxy: 'always through VPN' domain list and leak
+ test
+
+Optional list of domains (with subdomains) that use the VPN even from
+Direct apps; their DNS goes to the remote server too, so the lookup
+doesn't leak and fails closed when the server is down. Rule order keeps
+sniffing away from VPN apps: hijack-dns, VPN app rules, sniff, domains,
+Direct app rules. With an empty list the config has no sniff rule at
+all. 'Leak test' opens ipleak.net via the app chooser so it can be run
+in a VPN app and a Direct app.
+---
+ .../sfa/bitproxy/BitProxyApplier.kt           |  2 +-
+ .../nekohasekai/sfa/bitproxy/BitProxyPrefs.kt |  5 +++
+ .../sfa/bitproxy/config/ConfigGenerator.kt    | 25 +++++++++++--
+ .../sfa/bitproxy/ui/BitProxyScreen.kt         | 36 +++++++++++++++++++
+ .../bitproxy/config/ConfigGeneratorTest.kt    | 20 +++++++++++
+ 5 files changed, 85 insertions(+), 3 deletions(-)
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
+index da2954e..54122cc 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
+@@ -56,7 +56,7 @@ object BitProxyApplier {
+     private suspend fun applyLocked(serviceRunning: Boolean, ipv6: Boolean): Outcome {
+         val servers = BitProxyStore.servers()
+         val routes = AppResolver.scan().routes(BitProxyPrefs.apps)
+-        var result = when (val r = ConfigGenerator.generate(GeneratorInput(servers.map { it.conf }, BitProxyPrefs.selectedServer, routes, ipv6, BitProxyPrefs.autoPick))) {
++        var result = when (val r = ConfigGenerator.generate(GeneratorInput(servers.map { it.conf }, BitProxyPrefs.selectedServer, routes, ipv6, BitProxyPrefs.autoPick, BitProxyPrefs.vpnDomains))) {
+             is GenerateResult.Error -> return Outcome.Failed(r.message)
+             is GenerateResult.Ok -> r
+         }
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
+index e3b7c35..ec01f42 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
+@@ -43,6 +43,11 @@ object BitProxyPrefs {
+         get() = prefs.getBoolean("applied_ipv6", false)
+         set(value) = prefs.edit { putBoolean("applied_ipv6", value) }
+ 
++    /** One domain per line; each also matches its subdomains. */
++    var vpnDomains: List<String>
++        get() = prefs.getString("vpn_domains", "")!!.lines().map { it.trim() }.filter { it.isNotEmpty() }
++        set(value) = prefs.edit { putString("vpn_domains", value.joinToString("\n")) }
++
+     var autoPick: Boolean
+         get() = prefs.getBoolean("auto_pick", false)
+         set(value) = prefs.edit { putBoolean("auto_pick", value) }
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
+index eeff66e..01b37ce 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
+@@ -33,6 +33,8 @@ data class GeneratorInput(
+     val ipv6: Boolean = false,
+     /** "VPN" becomes a urltest group that picks the fastest server instead of a manual selector. */
+     val autoPick: Boolean = false,
++    /** Domains (and their subdomains) that always go through the VPN, also for Direct apps. */
++    val vpnDomains: List<String> = emptyList(),
+ )
+ 
+ sealed interface GenerateResult {
+@@ -118,6 +120,7 @@ object ConfigGenerator {
+             usedTags += tag
+             tag to app
+         }
++        val domains = input.vpnDomains.map { it.trim().trimStart('.').lowercase() }.filter { it.isNotEmpty() }.distinct()
+         val vpnUids = routes.filter { it.second.viaVpn }.flatMap { it.second.uids }.distinct().sorted()
+ 
+         val config = buildJsonObject {
+@@ -144,6 +147,12 @@ object ConfigGenerator {
+                             put("server", "remote")
+                         }
+                     }
++                    if (domains.isNotEmpty()) {
++                        addJsonObject {
++                            put("domain_suffix", buildJsonArray { domains.forEach { add(it) } })
++                            put("server", "remote")
++                        }
++                    }
+                 }
+                 put("final", "local")
+             }
+@@ -197,13 +206,25 @@ object ConfigGenerator {
+                         put("action", "hijack-dns")
+                     }
+                     // user_id, not package_name: package rules did not match on OxygenOS.
+-                    // No "sniff" before these rules: it stopped pre-match and stalled TCP.
+-                    for ((tag, app) in routes) {
++                    // No "sniff" before the VPN app rules: it stopped pre-match and stalled TCP.
++                    // With a VPN domain list, sniffing happens only after them, for Direct apps.
++                    fun appRules(filter: (AppRoute) -> Boolean) = routes.filter { filter(it.second) }.forEach { (tag, app) ->
+                         addJsonObject {
+                             put("user_id", intArray(app.uids.sorted()))
+                             put("outbound", tag)
+                         }
+                     }
++                    if (domains.isEmpty()) {
++                        appRules { true }
++                    } else {
++                        appRules { it.viaVpn }
++                        addJsonObject { put("action", "sniff") }
++                        addJsonObject {
++                            put("domain_suffix", buildJsonArray { domains.forEach { add(it) } })
++                            put("outbound", VPN)
++                        }
++                        appRules { !it.viaVpn }
++                    }
+                 }
+                 put("final", DIRECT)
+             }
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt
+index f3a12d6..9169291 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt
+@@ -1,6 +1,8 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ package io.nekohasekai.sfa.bitproxy.ui
+ 
++import android.content.Intent
++import android.net.Uri
+ import androidx.activity.compose.rememberLauncherForActivityResult
+ import androidx.activity.result.contract.ActivityResultContracts
+ import androidx.compose.animation.AnimatedContentTransitionScope
+@@ -32,6 +34,7 @@ import androidx.compose.material3.IconButton
+ import androidx.compose.material3.ListItem
+ import androidx.compose.material3.ListItemDefaults
+ import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.OutlinedTextField
+ import androidx.compose.material3.RadioButton
+ import androidx.compose.material3.Switch
+ import androidx.compose.material3.Text
+@@ -47,6 +50,7 @@ import androidx.compose.runtime.rememberCoroutineScope
+ import androidx.compose.runtime.setValue
+ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.platform.LocalContext
+ import androidx.compose.ui.unit.dp
+ import androidx.navigation.NavController
+ import androidx.navigation.NavGraphBuilder
+@@ -118,6 +122,8 @@ fun BitProxyScreen(navController: NavController, serviceStatus: Status) {
+     var message by remember { mutableStateOf<String?>(null) }
+     var applying by remember { mutableStateOf(false) }
+     var autoPick by remember { mutableStateOf(BitProxyPrefs.autoPick) }
++    var domains by remember { mutableStateOf(BitProxyPrefs.vpnDomains.joinToString("\n")) }
++    val context = LocalContext.current
+     var confirmDelete by remember { mutableStateOf<StoredServer?>(null) }
+     val appCounts = remember { BitProxyPrefs.apps.values.let { v -> v.count { it == BitProxyPrefs.Mode.VPN } to v.count { it == BitProxyPrefs.Mode.DIRECT } } }
+ 
+@@ -278,6 +284,36 @@ fun BitProxyScreen(navController: NavController, serviceStatus: Status) {
+                 }
+             }
+         }
++        Card(
++            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
++            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
++        ) {
++            Column(Modifier.padding(16.dp)) {
++                Text("Always through VPN", style = MaterialTheme.typography.titleMedium)
++                Text(
++                    "Domains (one per line, subdomains included) that use the VPN even from Direct apps. " +
++                        "Leave empty if you don't need it: Direct apps' traffic is then never inspected.",
++                    style = MaterialTheme.typography.bodySmall,
++                    color = MaterialTheme.colorScheme.onSurfaceVariant,
++                    modifier = Modifier.padding(vertical = 8.dp),
++                )
++                OutlinedTextField(
++                    value = domains,
++                    onValueChange = {
++                        domains = it
++                        BitProxyPrefs.vpnDomains = it.lines()
++                    },
++                    placeholder = { Text("example.com") },
++                    minLines = 2,
++                    modifier = Modifier.fillMaxWidth(),
++                )
++                Text("Takes effect after Apply.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
++                TextButton(onClick = {
++                    val view = Intent(Intent.ACTION_VIEW, Uri.parse("https://ipleak.net/"))
++                    runCatching { context.startActivity(Intent.createChooser(view, "Open the leak test in a VPN app, then a Direct app")) }
++                }) { Text("Leak test (open in a VPN app, then a Direct app)") }
++            }
++        }
+     }
+ 
+     message?.let {
+diff --git a/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt b/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
+index 5364af3..0890a65 100644
+--- a/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
++++ b/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
+@@ -147,6 +147,26 @@ class ConfigGeneratorTest {
+         assertEquals(listOf("nl-free#1", "us-free-2"), vpn["outbounds"]!!.jsonArray.map { it.jsonPrimitive.content })
+     }
+ 
++    @Test fun vpnDomainsSniffOnlyAfterVpnApps() {
++        val apps = twoServerApps.mapIndexed { i, a -> a.copy(viaVpn = i != 2) } // Firefox Direct
++        val r = ok(GeneratorInput(servers("two-servers"), null, apps, vpnDomains = listOf(" .Example.COM", "example.com", "")))
++        val rules = r.config["route"]!!.jsonObject["rules"]!!.jsonArray.map { it.jsonObject }
++        val sniff = rules.indexOfFirst { it["action"]?.jsonPrimitive?.content == "sniff" }
++        val domain = rules.indexOfFirst { "domain_suffix" in it }
++        val firefox = rules.indexOfFirst { it["outbound"]?.jsonPrimitive?.content == "Firefox" }
++        val lastVpnApp = rules.indexOfLast { it["outbound"]?.jsonPrimitive?.content?.startsWith("Discord") == true }
++        assertTrue(lastVpnApp < sniff && sniff < domain && domain < firefox)
++        assertEquals("VPN", rules[domain]["outbound"]!!.jsonPrimitive.content)
++        assertEquals(listOf("example.com"), rules[domain]["domain_suffix"]!!.jsonArray.map { it.jsonPrimitive.content })
++        val dnsRules = r.config["dns"]!!.jsonObject["rules"]!!.jsonArray
++        assertEquals("remote", dnsRules[1].jsonObject["server"]!!.jsonPrimitive.content)
++    }
++
++    @Test fun noDomainsMeansNoSniff() {
++        val json = ok(GeneratorInput(servers("two-servers"), null, twoServerApps)).json
++        assertFalse("sniff" in json)
++    }
++
+     @Test fun noServersIsAnError() {
+         assertTrue(ConfigGenerator.generate(GeneratorInput(emptyList(), null, twoServerApps)) is GenerateResult.Error)
+     }
+-- 
+2.56.0
+

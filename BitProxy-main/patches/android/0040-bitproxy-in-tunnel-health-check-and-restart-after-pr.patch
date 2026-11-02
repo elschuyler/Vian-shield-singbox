@@ -1,0 +1,279 @@
+From bb67d2862702c46cc889b7279beb45ebb114ca96 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 17:15:08 +0530
+Subject: [PATCH 40/49] bitproxy: in-tunnel health check and restart after
+ process death
+
+Every 3 minutes while a network is up, a STUN request goes through the
+VPN outbound; two failures in a row rebuild sing-box (backoff 3 to 30
+min). The service is sticky again, and a system restart after our
+process died only brings the VPN back if it was running.
+---
+ .../java/io/nekohasekai/sfa/bg/BoxService.kt  |   4 +-
+ .../io/nekohasekai/sfa/bg/ProxyService.kt     |   3 +-
+ .../java/io/nekohasekai/sfa/bg/VPNService.kt  |   3 +-
+ .../nekohasekai/sfa/bitproxy/BitProxyPrefs.kt |   5 +
+ .../sfa/bitproxy/BitProxyServiceHooks.kt      |  18 +++
+ .../nekohasekai/sfa/bitproxy/Ipv6Watcher.kt   |   5 +-
+ .../nekohasekai/sfa/bitproxy/TunnelHealth.kt  | 108 ++++++++++++++++++
+ .../sfa/bitproxy/TunnelHealthTest.kt          |  11 ++
+ 8 files changed, 152 insertions(+), 5 deletions(-)
+ create mode 100644 app/src/main/java/io/nekohasekai/sfa/bitproxy/TunnelHealth.kt
+ create mode 100644 app/src/test/java/io/nekohasekai/sfa/bitproxy/TunnelHealthTest.kt
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bg/BoxService.kt b/app/src/main/java/io/nekohasekai/sfa/bg/BoxService.kt
+index cd097f2..619a1f1 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bg/BoxService.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bg/BoxService.kt
+@@ -361,7 +361,7 @@ class BoxService(private val service: Service, private val platformInterface: Pl
+     @OptIn(DelicateCoroutinesApi::class)
+     @Suppress("SameReturnValue")
+     internal fun onStartCommand(): Int {
+-        if (status.value != Status.Stopped) return Service.START_NOT_STICKY
++        if (status.value != Status.Stopped) return BitProxyServiceHooks.START_MODE
+         status.value = Status.Starting
+         notification.show(lastProfileName, R.string.status_starting)
+ 
+@@ -391,7 +391,7 @@ class BoxService(private val service: Service, private val platformInterface: Pl
+             }
+             startService()
+         }
+-        return Service.START_NOT_STICKY
++        return BitProxyServiceHooks.START_MODE
+     }
+ 
+     internal fun onBind(): IBinder = binder
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bg/ProxyService.kt b/app/src/main/java/io/nekohasekai/sfa/bg/ProxyService.kt
+index 46255e8..388b5a0 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bg/ProxyService.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bg/ProxyService.kt
+@@ -9,7 +9,8 @@ class ProxyService :
+     PlatformInterfaceWrapper {
+     private val service = BoxService(this, this)
+ 
+-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int) = service.onStartCommand()
++    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int) =
++        if (io.nekohasekai.sfa.bitproxy.BitProxyServiceHooks.skipStart(intent, this)) START_NOT_STICKY else service.onStartCommand()
+ 
+     override fun onBind(intent: Intent) = service.onBind()
+ 
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bg/VPNService.kt b/app/src/main/java/io/nekohasekai/sfa/bg/VPNService.kt
+index cf663ba..ed64e13 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bg/VPNService.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bg/VPNService.kt
+@@ -27,7 +27,8 @@ class VPNService :
+ 
+     private val service = BoxService(this, this)
+ 
+-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int) = service.onStartCommand()
++    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int) =
++        if (io.nekohasekai.sfa.bitproxy.BitProxyServiceHooks.skipStart(intent, this)) START_NOT_STICKY else service.onStartCommand()
+ 
+     override fun onBind(intent: Intent): IBinder {
+         val binder = super.onBind(intent)
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
+index dbc834a..6756c34 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
+@@ -69,6 +69,11 @@ object BitProxyPrefs {
+ 
+     fun setTileApp(slot: Int, key: AppKey?) = prefs.edit { if (key == null) remove("tile_$slot") else putString("tile_$slot", key.toString()) }
+ 
++    /** True while the VPN should be running; decides whether a system restart brings it back. */
++    var wantRunning: Boolean
++        get() = prefs.getBoolean("want_running", false)
++        set(value) = prefs.edit(commit = true) { putBoolean("want_running", value) }
++
+     var updaterEnabledOnce: Boolean
+         get() = prefs.getBoolean("updater_enabled_once", false)
+         set(value) = prefs.edit { putBoolean("updater_enabled_once", value) }
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
+index 62003fb..1e65d95 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
+@@ -88,8 +88,10 @@ object BitProxyServiceHooks {
+     fun onStarted() {
+         EventLog.log("VPN started")
+         running = true
++        BitProxyPrefs.wantRunning = true
+         Ipv6Watcher.start()
+         AppWatcher.start()
++        TunnelHealth.start()
+     }
+ 
+     /**
+@@ -108,8 +110,24 @@ object BitProxyServiceHooks {
+             android.os.Process.killProcess(android.os.Process.myPid())
+         }
+         running = false
++        BitProxyPrefs.wantRunning = false
+         Ipv6Watcher.stop()
+         AppWatcher.stop()
++        TunnelHealth.stop()
++    }
++
++    /** BoxService's start mode: sticky, so Android restarts the VPN if it kills our process. */
++    const val START_MODE = android.app.Service.START_STICKY
++
++    /**
++     * Hook in VPNService.onStartCommand. A null intent is Android restarting the sticky service
++     * after our process died: only bring the VPN back if it was running (not stopped by you).
++     */
++    fun skipStart(intent: Intent?, service: android.app.Service): Boolean {
++        if (intent != null || BitProxyPrefs.wantRunning) return false
++        EventLog.log("system restart ignored: the VPN was stopped")
++        service.stopSelf()
++        return true
+     }
+ 
+     /** Hook where BoxService marks itself Stopped: stopping did finish. */
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/Ipv6Watcher.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/Ipv6Watcher.kt
+index 53e2d53..6e9361b 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/Ipv6Watcher.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/Ipv6Watcher.kt
+@@ -68,7 +68,10 @@ object Ipv6Watcher {
+     }
+ 
+     private const val LONG_OUTAGE_MS = 2 * 60_000L
+-    private var lostSince = 0L
++    @Volatile private var lostSince = 0L
++
++    /** False while the underlying network is gone. */
++    val networkUp: Boolean get() = lostSince == 0L
+ 
+     private fun onNetwork(network: Network?) {
+         // Long outage recovery: sing-box didn't come back after 80 min without any network (Wi-Fi
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/TunnelHealth.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/TunnelHealth.kt
+new file mode 100644
+index 0000000..6812e03
+--- /dev/null
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/TunnelHealth.kt
+@@ -0,0 +1,108 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++package io.nekohasekai.sfa.bitproxy
++
++import android.os.Build
++import android.os.PowerManager
++import io.nekohasekai.libbox.Libbox
++import io.nekohasekai.libbox.STUNTestHandler
++import io.nekohasekai.libbox.STUNTestProgress
++import io.nekohasekai.libbox.STUNTestResult
++import io.nekohasekai.sfa.Application
++import io.nekohasekai.sfa.bitproxy.config.ConfigGenerator
++import kotlinx.coroutines.CompletableDeferred
++import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.Job
++import kotlinx.coroutines.SupervisorJob
++import kotlinx.coroutines.delay
++import kotlinx.coroutines.isActive
++import kotlinx.coroutines.launch
++import kotlinx.coroutines.withTimeoutOrNull
++
++/**
++ * "Connected" isn't proof that traffic flows (overnight: VPN on, no internet). While a network is
++ * up, send a small UDP request (STUN) through the VPN outbound every few minutes; after two
++ * failures in a row, rebuild sing-box. Recoveries back off (3 → 30 min) so a dead server can't
++ * cause a reload loop. Same idea as Proton VPN's in-tunnel "local agent" check.
++ */
++object TunnelHealth {
++    private const val BASE_MS = 3 * 60_000L
++    private const val MAX_MS = 30 * 60_000L
++    private const val RETRY_MS = 30_000L
++    private const val PROBE_TIMEOUT_MS = 10_000L
++    private val STUN_SERVERS = listOf("stun.cloudflare.com:3478", "stun.l.google.com:19302")
++
++    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
++    private var job: Job? = null
++
++    /** Wait before the next check after [restarts] recoveries that didn't help: 3, 6, 12, 24, 30 min. */
++    fun delayAfter(restarts: Int): Long = (BASE_MS shl restarts.coerceIn(0, 4)).coerceAtMost(MAX_MS)
++
++    fun start() {
++        job?.cancel()
++        job = scope.launch {
++            var failures = 0
++            var restarts = 0
++            while (isActive) {
++                delay(if (failures > 0) RETRY_MS else delayAfter(restarts))
++                // No network: nothing to test (Ipv6Watcher handles the outage). Doze: sing-box is paused.
++                if (!Ipv6Watcher.networkUp || deviceIdle()) {
++                    failures = 0
++                    continue
++                }
++                if (probe()) {
++                    if (failures > 0 || restarts > 0) EventLog.log("tunnel check OK")
++                    failures = 0
++                    restarts = 0
++                    continue
++                }
++                failures++
++                EventLog.log("tunnel check failed ($failures/2)")
++                if (failures >= 2) {
++                    failures = 0
++                    restarts++
++                    BitProxyServiceHooks.restartVpn("no traffic through the tunnel").join()
++                }
++            }
++        }
++    }
++
++    fun stop() {
++        job?.cancel()
++        job = null
++    }
++
++    private fun deviceIdle() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
++        Application.application.getSystemService(PowerManager::class.java).isDeviceIdleMode
++
++    /** True if any STUN server answers through the VPN outbound. */
++    private suspend fun probe(): Boolean = STUN_SERVERS.any { server -> stun(server) }
++
++    private suspend fun stun(server: String): Boolean {
++        val done = CompletableDeferred<Boolean>()
++        val session = runCatching {
++            Libbox.newStandaloneCommandClient().startSTUNTest(
++                server,
++                ConfigGenerator.VPN,
++                object : STUNTestHandler {
++                    override fun onProgress(progress: STUNTestProgress) {
++                        if (progress.externalAddr.isNotEmpty()) done.complete(true)
++                    }
++
++                    override fun onResult(result: STUNTestResult) {
++                        done.complete(true)
++                    }
++
++                    override fun onError(message: String) {
++                        done.complete(false)
++                    }
++                },
++            )
++        }.getOrElse { return false }
++        return try {
++            withTimeoutOrNull(PROBE_TIMEOUT_MS) { done.await() } ?: false
++        } finally {
++            runCatching { session.close() }
++        }
++    }
++}
+diff --git a/app/src/test/java/io/nekohasekai/sfa/bitproxy/TunnelHealthTest.kt b/app/src/test/java/io/nekohasekai/sfa/bitproxy/TunnelHealthTest.kt
+new file mode 100644
+index 0000000..c6baab6
+--- /dev/null
++++ b/app/src/test/java/io/nekohasekai/sfa/bitproxy/TunnelHealthTest.kt
+@@ -0,0 +1,11 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++package io.nekohasekai.sfa.bitproxy
++
++import org.junit.Assert.assertEquals
++import org.junit.Test
++
++class TunnelHealthTest {
++    @Test fun backoffDoublesUpTo30Minutes() {
++        assertEquals(listOf(3L, 6L, 12L, 24L, 30L, 30L), (0..5).map { TunnelHealth.delayAfter(it) / 60_000 })
++    }
++}
+-- 
+2.56.0
+

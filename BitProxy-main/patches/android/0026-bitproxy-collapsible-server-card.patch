@@ -1,0 +1,157 @@
+From da681fa3e0f618f0bf0cbe682e092981c4048e78 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 01:31:52 +0530
+Subject: [PATCH 26/49] bitproxy: collapsible server card
+
+Tapping the server card header folds it to one line with the active
+server (and its latency when tested); the state is remembered.
+---
+ .../nekohasekai/sfa/bitproxy/BitProxyPrefs.kt |  4 +
+ .../sfa/bitproxy/ui/DashboardServersCard.kt   | 89 +++++++++++--------
+ 2 files changed, 58 insertions(+), 35 deletions(-)
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
+index 2a9abcc..a8f5a12 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
+@@ -47,6 +47,10 @@ object BitProxyPrefs {
+         get() = prefs.getString("vpn_domains", "")!!.lines().map { it.trim() }.filter { it.isNotEmpty() }
+         set(value) = prefs.edit { putString("vpn_domains", value.joinToString("\n")) }
+ 
++    var dashboardServersCollapsed: Boolean
++        get() = prefs.getBoolean("dashboard_servers_collapsed", false)
++        set(value) = prefs.edit { putBoolean("dashboard_servers_collapsed", value) }
++
+     var dashboardAppsCollapsed: Boolean
+         get() = prefs.getBoolean("dashboard_apps_collapsed", false)
+         set(value) = prefs.edit { putBoolean("dashboard_apps_collapsed", value) }
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardServersCard.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardServersCard.kt
+index e181b2d..b8f6d14 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardServersCard.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardServersCard.kt
+@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.padding
+ import androidx.compose.foundation.layout.size
+ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.outlined.Dns
++import androidx.compose.material.icons.outlined.ExpandLess
++import androidx.compose.material.icons.outlined.ExpandMore
+ import androidx.compose.material.icons.outlined.Refresh
+ import androidx.compose.material3.Card
+ import androidx.compose.material3.CardDefaults
+@@ -75,6 +77,7 @@ fun DashboardServersCard(serviceStatus: Status) {
+     var tested by remember { mutableStateOf(false) } // after a test, no delay means "no response"
+     var status by remember { mutableStateOf<String?>(null) }
+     val handler = remember { GroupDelays() }
++    var collapsed by remember { mutableStateOf(BitProxyPrefs.dashboardServersCollapsed) }
+ 
+     LaunchedEffect(Unit) { servers = withContext(Dispatchers.IO) { BitProxyStore.servers() } }
+ 
+@@ -108,12 +111,21 @@ fun DashboardServersCard(serviceStatus: Status) {
+         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+     ) {
+         Column(Modifier.padding(vertical = 8.dp)) {
+-            Row(Modifier.padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
++            Row(
++                Modifier
++                    .clickable {
++                        collapsed = !collapsed
++                        BitProxyPrefs.dashboardServersCollapsed = collapsed
++                    }
++                    .padding(start = 16.dp, end = 4.dp),
++                verticalAlignment = Alignment.CenterVertically,
++            ) {
+                 Icon(Icons.Outlined.Dns, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                 Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                     Text("Server", style = MaterialTheme.typography.titleMedium)
++                    val activeDelay = handler.delays[active.tag]?.takeIf { it > 0 }?.let { " · $it ms" } ?: ""
+                     Text(
+-                        status ?: if (BitProxyPrefs.autoPick) "Auto-pick fastest is on" else active.tag,
++                        status ?: ((if (BitProxyPrefs.autoPick) "Auto-pick: " else "") + active.tag + activeDelay),
+                         style = MaterialTheme.typography.bodySmall,
+                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                     )
+@@ -123,41 +135,48 @@ fun DashboardServersCard(serviceStatus: Status) {
+                 } else if (running) {
+                     IconButton(onClick = { test() }) { Icon(Icons.Outlined.Refresh, contentDescription = "Test latency") }
+                 }
++                Icon(
++                    if (collapsed) Icons.Outlined.ExpandMore else Icons.Outlined.ExpandLess,
++                    contentDescription = if (collapsed) "Expand" else "Collapse",
++                    modifier = Modifier.padding(end = 12.dp),
++                )
+             }
+-            for (server in list) {
+-                val delayMs = handler.delays[server.tag]
+-                val latency = when {
+-                    !running -> "Start the VPN to test"
+-                    delayMs != null && delayMs > 0 -> "$delayMs ms"
+-                    delayMs == null -> "Needs Apply (other tunnel address)"
+-                    tested -> "No response"
+-                    else -> "Not tested yet"
+-                }
+-                val down = running && tested && (delayMs == null || delayMs <= 0)
+-                ListItem(
+-                    headlineContent = { Text(server.tag) },
+-                    supportingContent = {
+-                        Text(
+-                            latency,
+-                            style = MaterialTheme.typography.bodySmall,
+-                            color = if (down) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+-                        )
+-                    },
+-                    leadingContent = { RadioButton(selected = server.tag == active.tag, onClick = null) },
+-                    modifier = Modifier.clickable(enabled = server.tag != active.tag) {
+-                        chosen = server.tag
+-                        BitProxyPrefs.selectedServer = server.tag
+-                        status = "Switching to ${server.tag}…"
+-                        scope.launch {
+-                            status = when (val o = BitProxyApplier.apply(running)) {
+-                                is BitProxyApplier.Outcome.Applied -> null
+-                                is BitProxyApplier.Outcome.Failed -> "Not switched: ${o.message}"
++            if (!collapsed) {
++                for (server in list) {
++                    val delayMs = handler.delays[server.tag]
++                    val latency = when {
++                        !running -> "Start the VPN to test"
++                        delayMs != null && delayMs > 0 -> "$delayMs ms"
++                        delayMs == null -> "Needs Apply (other tunnel address)"
++                        tested -> "No response"
++                        else -> "Not tested yet"
++                    }
++                    val down = running && tested && (delayMs == null || delayMs <= 0)
++                    ListItem(
++                        headlineContent = { Text(server.tag) },
++                        supportingContent = {
++                            Text(
++                                latency,
++                                style = MaterialTheme.typography.bodySmall,
++                                color = if (down) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
++                            )
++                        },
++                        leadingContent = { RadioButton(selected = server.tag == active.tag, onClick = null) },
++                        modifier = Modifier.clickable(enabled = server.tag != active.tag) {
++                            chosen = server.tag
++                            BitProxyPrefs.selectedServer = server.tag
++                            status = "Switching to ${server.tag}…"
++                            scope.launch {
++                                status = when (val o = BitProxyApplier.apply(running)) {
++                                    is BitProxyApplier.Outcome.Applied -> null
++                                    is BitProxyApplier.Outcome.Failed -> "Not switched: ${o.message}"
++                                }
++                                handler.selected = null
+                             }
+-                            handler.selected = null
+-                        }
+-                    },
+-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+-                )
++                        },
++                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
++                    )
++                }
+             }
+         }
+     }
+-- 
+2.56.0
+
