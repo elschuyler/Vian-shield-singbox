@@ -1,0 +1,41 @@
+From c0b5a9ad7bb98b6534f04c764361229662578508 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 02:34:43 +0530
+Subject: [PATCH 33/49] bitproxy: rebind the UI when Apply switches proxy ->
+ VPN mode
+
+On a fresh install the UI binds ProxyService (no profile yet). The first
+Apply switched the service mode to VPN, but the open UI stayed bound to
+ProxyService, so after tapping start the VPN ran while the dashboard
+still showed it stopped (seen on a OnePlus 15). Apply now emits
+upstream's RequestReconnectService when the mode changes.
+---
+ .../main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
+index 5cb1726..341a446 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
+@@ -8,6 +8,8 @@ import io.nekohasekai.sfa.bg.BoxService
+ import io.nekohasekai.sfa.bitproxy.config.ConfigGenerator
+ import io.nekohasekai.sfa.bitproxy.config.GenerateResult
+ import io.nekohasekai.sfa.bitproxy.config.GeneratorInput
++import io.nekohasekai.sfa.compose.base.GlobalEventBus
++import io.nekohasekai.sfa.compose.base.UiEvent
+ import io.nekohasekai.sfa.database.Profile
+ import io.nekohasekai.sfa.database.ProfileManager
+ import io.nekohasekai.sfa.database.Settings
+@@ -124,6 +126,9 @@ object BitProxyApplier {
+     private suspend fun activate(profile: Profile, serviceRunning: Boolean): Boolean {
+         Settings.selectedProfile = profile.id
+         val modeChanged = Settings.rebuildServiceMode()
++        // The UI binds the service class of the old mode (proxy before the first Apply) and would
++        // never see the VPN start; make it rebind to the new one.
++        if (modeChanged) GlobalEventBus.tryEmit(UiEvent.RequestReconnectService)
+         if (!serviceRunning) return false
+         if (modeChanged) {
+             // Switching from a proxy-only profile to VPN mode needs a full restart.
+-- 
+2.56.0
+

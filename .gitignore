@@ -20,3 +20,6 @@ debug.keystore.base64
 *.keystore
 *.jks
 *.p12
+*.apk
+*.aab
+/dist/

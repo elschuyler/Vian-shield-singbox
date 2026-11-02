@@ -1,0 +1,43 @@
+From c6e320602c35201d595abdff1b358923d8934ecb Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 10:35:42 +0530
+Subject: [PATCH 35/49] bitproxy: About links point to the BitProxy repository
+
+Source Code and Documentation open github.com/zonicisalive/BitProxy
+(the README covers setup, features and troubleshooting) instead of the
+upstream sing-box pages.
+---
+ .../main/java/io/nekohasekai/sfa/bitproxy/BitProxyInfo.kt    | 5 ++++-
+ .../sfa/compose/screen/settings/SettingsScreen.kt            | 2 +-
+ 2 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyInfo.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyInfo.kt
+index fe9aece..3538812 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyInfo.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyInfo.kt
+@@ -3,5 +3,8 @@ package io.nekohasekai.sfa.bitproxy
+ 
+ object BitProxyInfo {
+     /** GPLv3: the About screen's "Source Code" must lead to this modified version's source. */
+-    const val SOURCE_URL = "https://github.com/ZonicExists/BitProxy"
++    const val SOURCE_URL = "https://github.com/zonicisalive/BitProxy"
++
++    /** About > Documentation: BitProxy's own guide (setup, features, troubleshooting). */
++    const val DOCS_URL = "$SOURCE_URL#readme"
+ }
+diff --git a/app/src/main/java/io/nekohasekai/sfa/compose/screen/settings/SettingsScreen.kt b/app/src/main/java/io/nekohasekai/sfa/compose/screen/settings/SettingsScreen.kt
+index 7500ae7..ed842a5 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/compose/screen/settings/SettingsScreen.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/compose/screen/settings/SettingsScreen.kt
+@@ -295,7 +295,7 @@ fun SettingsScreen(navController: NavController) {
+                         .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
+                         .clickable {
+                             val intent = android.content.Intent(android.content.Intent.ACTION_VIEW)
+-                            intent.data = android.net.Uri.parse("https://sing-box.sagernet.org/")
++                            intent.data = android.net.Uri.parse(io.nekohasekai.sfa.bitproxy.BitProxyInfo.DOCS_URL)
+                             context.startActivity(intent)
+                         },
+                     colors =
+-- 
+2.56.0
+

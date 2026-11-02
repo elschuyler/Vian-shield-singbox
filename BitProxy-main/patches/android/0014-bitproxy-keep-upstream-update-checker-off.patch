@@ -1,0 +1,49 @@
+From 737d9efa38fc8d149bbb8f0bb86f9a2175af3452 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 00:39:03 +0530
+Subject: [PATCH 14/49] bitproxy: keep upstream update checker off
+
+The GitHub update checker offers the official SFA APK, which has a
+different app id and signing key and cannot update BitProxy. Turn it
+off and mark the prompt as answered once the app has initialized.
+---
+ app/src/main/java/io/nekohasekai/sfa/Application.kt      | 2 +-
+ .../io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt  | 9 +++++++++
+ 2 files changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/Application.kt b/app/src/main/java/io/nekohasekai/sfa/Application.kt
+index 68004b5..c23e620 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/Application.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/Application.kt
+@@ -73,7 +73,7 @@ class Application : Application() {
+             }.onFailure {
+                 Log.w("Application", "setup libbox: ${it.message}")
+             }
+-            BitProxyServiceHooks.libboxReady.complete(Unit)
++            BitProxyServiceHooks.onAppInitialized()
+             UpdateProfileWork.reconfigureUpdater()
+             HookModuleUpdateNotifier.sync(this@Application)
+             TaildropFiles.cleanCache()
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
+index 78233b7..d230ec5 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
+@@ -46,6 +46,15 @@ object BitProxyServiceHooks {
+     /** Completed by Application once Libbox.setup() ran (it runs async in upstream). */
+     val libboxReady = kotlinx.coroutines.CompletableDeferred<Unit>()
+ 
++    /** Hook in Application, after upstream's async init (Libbox.setup) finished. */
++    fun onAppInitialized() {
++        // Upstream's GitHub update checker would offer the official SFA build (other app id and
++        // signing key), which can't update BitProxy. Keep it off and never ask.
++        Settings.checkUpdateEnabled = false
++        Settings.updateCheckPrompted = true
++        libboxReady.complete(Unit)
++    }
++
+     /**
+      * Before the service reads the selected profile. When the system starts us (Always-on,
+      * boot, restart) and no usable profile is selected, fall back to the BitProxy profile.
+-- 
+2.56.0
+

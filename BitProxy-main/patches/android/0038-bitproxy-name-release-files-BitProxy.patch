@@ -1,0 +1,55 @@
+From a5c6b81bd1b69bdfd89e9b2ea7dd1cb6d767427b Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 20:00:40 +0530
+Subject: [PATCH 38/49] bitproxy: name release files BitProxy-*
+
+APKs are BitProxy-<version>-<abi>.apk and the updater reads
+BitProxy-version-metadata.json.
+---
+ app/build.gradle.kts                                            | 2 +-
+ .../java/io/nekohasekai/sfa/vendor/GitHubUpdateChecker.kt       | 2 +-
+ app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyInfo.kt   | 2 +-
+ 3 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index e484d2e..f98881a 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -73,7 +73,7 @@ android {
+         targetSdk = 37
+         versionCode = getVersionProps("VERSION_CODE").toInt()
+         versionName = getVersionProps("VERSION_NAME")
+-        base.archivesName.set("SFA-${versionName}")
++        base.archivesName.set("BitProxy-${versionName}")
+     }
+ 
+     signingConfigs {
+diff --git a/app/src/github/java/io/nekohasekai/sfa/vendor/GitHubUpdateChecker.kt b/app/src/github/java/io/nekohasekai/sfa/vendor/GitHubUpdateChecker.kt
+index b76fc9a..74f62a4 100644
+--- a/app/src/github/java/io/nekohasekai/sfa/vendor/GitHubUpdateChecker.kt
++++ b/app/src/github/java/io/nekohasekai/sfa/vendor/GitHubUpdateChecker.kt
+@@ -15,7 +15,7 @@ import java.io.Closeable
+ class GitHubUpdateChecker : Closeable {
+     companion object {
+         private const val RELEASES_URL = io.nekohasekai.sfa.bitproxy.BitProxyInfo.RELEASES_API
+-        private const val METADATA_FILENAME = "SFA-version-metadata.json"
++        private const val METADATA_FILENAME = "BitProxy-version-metadata.json"
+     }
+ 
+     private val client = Libbox.newHTTPClient().apply {
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyInfo.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyInfo.kt
+index 0923aff..486dede 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyInfo.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyInfo.kt
+@@ -26,7 +26,7 @@ object BitProxyInfo {
+         return versionCode > BuildConfig.VERSION_CODE
+     }
+ 
+-    /** Release assets are per ABI (SFA-x.y.z-arm64-v8a.apk ...): take this phone's, else universal. */
++    /** Release assets are per ABI (BitProxy-x.y.z-arm64-v8a.apk ...): take this phone's, else universal. */
+     fun pickApk(names: List<String>): String? {
+         val apks = names.filter { it.endsWith(".apk") }
+         for (abi in Build.SUPPORTED_ABIS) apks.firstOrNull { it.endsWith("-$abi.apk") }?.let { return it }
+-- 
+2.56.0
+
