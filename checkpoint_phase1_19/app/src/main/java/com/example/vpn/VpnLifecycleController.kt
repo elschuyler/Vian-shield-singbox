@@ -1,0 +1,78 @@
+package com.example.vpn
+
+import android.app.Activity
+import android.content.Context
+import android.content.Intent
+import android.net.VpnService
+import androidx.activity.result.ActivityResultLauncher
+import androidx.core.content.ContextCompat
+import com.example.logging.LogCategory
+import com.example.logging.OperationalLogCatcher
+
+class VpnLifecycleController(private val context: Context) {
+
+    fun checkVpnPermission(): Intent? {
+        return VpnService.prepare(context)
+    }
+
+    fun requestStartVpn(
+        configContent: String,
+        permissionLauncher: ActivityResultLauncher<Intent>? = null,
+        activity: Activity? = null,
+        dnsProvider: String? = null
+    ) {
+        val prepareIntent = checkVpnPermission()
+        if (prepareIntent != null) {
+            OperationalLogCatcher.info(
+                LogCategory.VPN_LIFECYCLE,
+                "LifecycleController",
+                "[${OperationalLogCatcher.EVENT_VPN_PERMISSION_REQUIRED}] Android VPN permission required. Prompting consent dialog."
+            )
+            if (permissionLauncher != null) {
+                permissionLauncher.launch(prepareIntent)
+            } else {
+                activity?.startActivityForResult(prepareIntent, 101)
+            }
+            return
+        }
+
+        // Permission already granted, start service
+        startVpnService(configContent, dnsProvider)
+    }
+
+    fun startVpnService(configContent: String, dnsProvider: String? = null) {
+        OperationalLogCatcher.info(
+            LogCategory.VPN_LIFECYCLE,
+            "LifecycleController",
+            "[${OperationalLogCatcher.EVENT_VPN_SERVICE_START_REQUESTED}] Starting VianshieldVpnService..."
+        )
+        val intent = VianshieldVpnService.startIntent(context, configContent, dnsProvider)
+        try {
+            ContextCompat.startForegroundService(context, intent)
+        } catch (e: Throwable) {
+            OperationalLogCatcher.error(
+                LogCategory.VPN_LIFECYCLE,
+                "LifecycleController",
+                "Failed to start foreground VPN service: ${e.message}"
+            )
+        }
+    }
+
+    fun requestStopVpn() {
+        OperationalLogCatcher.info(
+            LogCategory.VPN_LIFECYCLE,
+            "LifecycleController",
+            "[${OperationalLogCatcher.EVENT_VPN_STOP_REQUESTED}] Requesting VPN stop..."
+        )
+        val intent = VianshieldVpnService.stopIntent(context)
+        try {
+            context.startService(intent)
+        } catch (e: Throwable) {
+            OperationalLogCatcher.error(
+                LogCategory.VPN_LIFECYCLE,
+                "LifecycleController",
+                "Failed to stop VPN service: ${e.message}"
+            )
+        }
+    }
+}

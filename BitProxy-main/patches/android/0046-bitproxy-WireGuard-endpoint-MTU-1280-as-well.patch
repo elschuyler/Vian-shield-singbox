@@ -1,0 +1,51 @@
+From 3be984fa06772525e46b2f018e430244360084c4 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Wed, 30 Sep 2026 19:01:48 +0530
+Subject: [PATCH 46/49] bitproxy: WireGuard endpoint MTU 1280 as well
+
+TCP is terminated at the TUN and re-sent through the endpoint, whose own
+MTU (sing-box default 1408) decides the tunnel packet size; the TUN MTU
+alone didn't stop "sendmsg: message too long" on Jio mobile data.
+---
+ .../io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt    | 5 ++++-
+ .../nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt   | 4 +++-
+ 2 files changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
+index b6b8a06..cd554d4 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
+@@ -330,7 +330,10 @@ object ConfigGenerator {
+                 }
+             }
+         }
+-        conf.mtu?.let { put("mtu", it) }
++        // The endpoint has its own packet size (sing-box default 1408): TCP is terminated at the TUN
++        // and re-sent through the endpoint, so the TUN MTU doesn't limit it. Same 1280 here, or
++        // mobile data (Jio, 1372-byte link) refuses the packets ("sendmsg: message too long").
++        put("mtu", conf.mtu ?: TUN_MTU)
+     }
+ 
+     private fun tagged(p: ProxyServer, tag: String) = JsonObject(mapOf("type" to p.options.getValue("type"), "tag" to JsonPrimitive(tag)) + (p.options - "type" - "tag"))
+diff --git a/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt b/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
+index f91740f..ad4534b 100644
+--- a/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
++++ b/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
+@@ -47,11 +47,13 @@ class ConfigGeneratorTest {
+             val out = rule.jsonObject["outbound"]?.jsonPrimitive?.content
+             if (out in appSelectors) JsonObject(rule.jsonObject + ("outbound" to appSelectors[out]!!)) else rule
+         }
+-        // Deviation from the script: TUN MTU 1280 (see ConfigGenerator.TUN_MTU).
++        // Deviation from the script: TUN and WireGuard endpoint MTU 1280 (see ConfigGenerator.TUN_MTU).
+         val tun = JsonObject(script["inbounds"]!!.jsonArray[0].jsonObject + ("mtu" to JsonPrimitive(1280)))
++        val endpoints = script["endpoints"]!!.jsonArray.map { e -> JsonObject(e.jsonObject + ("mtu" to (e.jsonObject["mtu"] ?: JsonPrimitive(1280)))) }
+         return JsonObject(
+             script + mapOf(
+                 "inbounds" to JsonArray(listOf(tun)),
++                "endpoints" to JsonArray(endpoints),
+                 "outbounds" to JsonArray(outbounds.take(2)),
+                 "route" to JsonObject(script["route"]!!.jsonObject + ("rules" to JsonArray(rules))),
+             ),
+-- 
+2.56.0
+

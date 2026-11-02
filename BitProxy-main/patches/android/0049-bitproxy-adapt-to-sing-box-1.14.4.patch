@@ -1,0 +1,51 @@
+From 38e68d17d50993fe43fafc4ea3b4969e2d521821 Mon Sep 17 00:00:00 2001
+From: zonicisalive <71136987+zonicisalive@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 16:51:09 +0530
+Subject: [PATCH 49/49] bitproxy: adapt to sing-box 1.14.4
+
+Upstream's rebuildServiceMode() no longer says whether the mode changed
+(detectServiceMode() does), and the UI now rebinds by itself when the
+service mode changes, so the RequestReconnectService event is gone.
+---
+ .../io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt    | 11 ++++-------
+ 1 file changed, 4 insertions(+), 7 deletions(-)
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
+index 5f7e995..7cac97f 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
+@@ -8,8 +8,6 @@ import io.nekohasekai.sfa.bg.BoxService
+ import io.nekohasekai.sfa.bitproxy.config.ConfigGenerator
+ import io.nekohasekai.sfa.bitproxy.config.GenerateResult
+ import io.nekohasekai.sfa.bitproxy.config.GeneratorInput
+-import io.nekohasekai.sfa.compose.base.GlobalEventBus
+-import io.nekohasekai.sfa.compose.base.UiEvent
+ import io.nekohasekai.sfa.database.Profile
+ import io.nekohasekai.sfa.database.ProfileManager
+ import io.nekohasekai.sfa.database.Settings
+@@ -102,7 +100,7 @@ object BitProxyApplier {
+         BitProxyPrefs.appliedIpv6 = result.ipv6
+         BitProxyPrefs.healthCheck = result.allWireGuard
+         // Same config as the one running: don't reload, a reload drops every connection for a moment.
+-        if (old == json && serviceRunning && Settings.selectedProfile == profile.id && !Settings.rebuildServiceMode()) {
++        if (old == json && serviceRunning && Settings.selectedProfile == profile.id && Settings.detectServiceMode() == Settings.serviceMode) {
+             Log.i(TAG, "config unchanged, no reload")
+             return Outcome.Applied(result, reloaded = true, unchanged = true)
+         }
+@@ -145,10 +143,9 @@ object BitProxyApplier {
+     /** Selects the profile and reloads the service if it is running. Returns true if reloaded. */
+     private suspend fun activate(profile: Profile, serviceRunning: Boolean): Boolean {
+         Settings.selectedProfile = profile.id
+-        val modeChanged = Settings.rebuildServiceMode()
+-        // The UI binds the service class of the old mode (proxy before the first Apply) and would
+-        // never see the VPN start; make it rebind to the new one.
+-        if (modeChanged) GlobalEventBus.tryEmit(UiEvent.RequestReconnectService)
++        val modeChanged = Settings.detectServiceMode() != Settings.serviceMode
++        // The UI rebinds to the new service class by itself (upstream ServiceConnection).
++        Settings.rebuildServiceMode()
+         if (!serviceRunning) return false
+         if (modeChanged) {
+             // Switching from a proxy-only profile to VPN mode needs a full restart.
+-- 
+2.56.0
+

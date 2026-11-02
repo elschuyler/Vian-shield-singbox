@@ -1,0 +1,57 @@
+From 1d993d080c6b4c89bc71f503f819c92d73d31b5e Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 18:01:55 +0530
+Subject: [PATCH 42/49] bitproxy: update source is BitProxy releases only;
+ clearer update track names
+
+F-Droid only has upstream SFA (another app id and signing key), so it is
+no longer offered and a saved F-Droid choice is switched back to GitHub.
+Beta now means BitProxy pre-releases built on sing-box alpha/beta/rc.
+---
+ .../java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt   | 2 ++
+ app/src/other/java/io/nekohasekai/sfa/vendor/Vendor.kt         | 3 ++-
+ app/src/other/res/values/bitproxy_names.xml                    | 3 +++
+ 3 files changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
+index 198f780..bcb8aad 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
+@@ -56,6 +56,8 @@ object BitProxyServiceHooks {
+             Settings.checkUpdateEnabled = true
+             Settings.updateCheckPrompted = true
+         }
++        // F-Droid would check upstream SFA; BitProxy only updates from its own releases.
++        if (Settings.updateSource != "github") Settings.updateSource = "github"
+         libboxReady.complete(Unit)
+     }
+ 
+diff --git a/app/src/other/java/io/nekohasekai/sfa/vendor/Vendor.kt b/app/src/other/java/io/nekohasekai/sfa/vendor/Vendor.kt
+index fa39ea9..7796eca 100644
+--- a/app/src/other/java/io/nekohasekai/sfa/vendor/Vendor.kt
++++ b/app/src/other/java/io/nekohasekai/sfa/vendor/Vendor.kt
+@@ -97,7 +97,8 @@ object Vendor : VendorInterface {
+ 
+     override val hasCustomUpdate = true
+ 
+-    override val updateSources = listOf(UpdateSource.GITHUB, UpdateSource.FDROID)
++    // BitProxy: F-Droid only has upstream SFA (other app id and key); updates come from BitProxy releases.
++    override val updateSources = listOf(UpdateSource.GITHUB)
+ 
+     override fun checkUpdateAsync(): UpdateInfo? = when (UpdateSource.fromString(Settings.updateSource)) {
+         UpdateSource.FDROID -> checkFDroidUpdate(Application.application)
+diff --git a/app/src/other/res/values/bitproxy_names.xml b/app/src/other/res/values/bitproxy_names.xml
+index fe39fc4..3d12598 100644
+--- a/app/src/other/res/values/bitproxy_names.xml
++++ b/app/src/other/res/values/bitproxy_names.xml
+@@ -6,4 +6,7 @@
+     <string name="error_invalid_configuration">Invalid BitProxy configuration: %s</string>
+     <string name="taildrop_open_app">Open BitProxy</string>
+     <string name="xposed_description">Privileged Enhancement for BitProxy</string>
++    <string name="update_source_github">BitProxy releases (GitHub)</string>
++    <string name="update_track_stable">Stable (sing-box releases)</string>
++    <string name="update_track_beta">Beta (also sing-box alpha, beta and rc)</string>
+ </resources>
+-- 
+2.56.0
+

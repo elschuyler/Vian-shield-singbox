@@ -1,0 +1,56 @@
+From 94dcd3d5f56e5fb6bf678f412ed2cc6a49f54dd7 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 01:45:43 +0530
+Subject: [PATCH 29/49] bitproxy: drop duplicate live-speed switch
+
+Upstream's Settings > App > Notification already has 'Display realtime
+speed in notification'; the BitProxy notifications card now points
+there instead of repeating the switch.
+---
+ .../nekohasekai/sfa/bitproxy/ui/NotificationsCard.kt   | 10 +++-------
+ 1 file changed, 3 insertions(+), 7 deletions(-)
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/NotificationsCard.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/NotificationsCard.kt
+index 31495d7..7026b63 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/NotificationsCard.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/NotificationsCard.kt
+@@ -27,14 +27,12 @@ import androidx.compose.ui.graphics.Color
+ import androidx.compose.ui.platform.LocalContext
+ import androidx.compose.ui.unit.dp
+ import io.nekohasekai.sfa.bitproxy.BitProxyPrefs
+-import io.nekohasekai.sfa.database.Settings
+ 
+ /** Which notifications BitProxy shows, and shortcuts to hide them in system settings. */
+ @Composable
+ fun NotificationsCard() {
+     val context = LocalContext.current
+     var askNewApps by remember { mutableStateOf(BitProxyPrefs.askNewApps) }
+-    var liveSpeed by remember { mutableStateOf(Settings.dynamicNotification) }
+ 
+     fun open(intent: Intent) = runCatching { context.startActivity(intent) }
+     val appNotifications = Intent(ACTION_APP_NOTIFICATION_SETTINGS).putExtra(EXTRA_APP_PACKAGE, context.packageName)
+@@ -57,10 +55,6 @@ fun NotificationsCard() {
+             askNewApps = it
+             BitProxyPrefs.askNewApps = it
+         }
+-        toggle("Live speed in VPN notification", "Off: a static notification, no updates while the screen is on. Applies at the next VPN start.", liveSpeed) {
+-            liveSpeed = it
+-            Settings.dynamicNotification = it
+-        }
+         ListItem(
+             headlineContent = { Text("Hide the VPN notification") },
+             supportingContent = {
+@@ -79,7 +73,9 @@ fun NotificationsCard() {
+         )
+         ListItem(
+             headlineContent = { Text("All notification settings") },
+-            supportingContent = { Text("VPN start errors, new app prompts and the rest, each on its own. Keep \"VPN start errors\" on.") },
++            supportingContent = {
++                Text("VPN start errors, new app prompts and the rest, each on its own. Keep \"VPN start errors\" on. Live speed in the VPN notification: Settings > App > Notification.")
++            },
+             modifier = Modifier.clickable { open(appNotifications) },
+             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+         )
+-- 
+2.56.0
+

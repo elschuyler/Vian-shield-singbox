@@ -1,0 +1,62 @@
+From 518bf31e28c7871507b6460e7d0501654587aa63 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 14:23:02 +0530
+Subject: [PATCH 43/49] bitproxy: TUN stack gvisor, so Android can't break all
+ TCP
+
+With the default "mixed" stack, TCP goes through a kernel socket that
+listens on the TUN address. Android can destroy that socket (seen on
+OxygenOS 16); sing-tun's accept loop then exits silently and every new
+TCP connection is refused until a restart, while DNS, ping and UDP keep
+working (a game failed to download its config, apps broke after an app
+was installed or removed). gVisor handles TCP in the process, with no
+kernel socket to destroy. Reproduced and verified on the emulator with
+ss -K.
+---
+ .../io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt    | 5 +++++
+ .../nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt   | 4 ++++
+ 2 files changed, 9 insertions(+)
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
+index 8a8a572..0492a53 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
+@@ -224,6 +224,11 @@ object ConfigGenerator {
+                     put("mtu", TUN_MTU)
+                     put("auto_route", true)
+                     put("strict_route", true)
++                    // gvisor, not the default "mixed": mixed hands TCP to a kernel socket listening on the
++                    // TUN address. Android can destroy that socket (seen on OxygenOS: an app installed or
++                    // removed, VPN rebuilt); sing-box then silently stops accepting and every new TCP
++                    // connection is refused until a restart, while DNS and UDP keep working.
++                    put("stack", "gvisor")
+                 }
+             }
+             putJsonArray("endpoints") {
+diff --git a/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt b/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
+index 901ae44..c67d7ca 100644
+--- a/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
++++ b/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
+@@ -7,6 +7,7 @@ import io.nekohasekai.sfa.bitproxy.wireguard.WireGuardConfParser
+ import kotlinx.serialization.json.Json
+ import kotlinx.serialization.json.JsonArray
+ import kotlinx.serialization.json.JsonObject
++import kotlinx.serialization.json.JsonPrimitive
+ import kotlinx.serialization.json.jsonArray
+ import kotlinx.serialization.json.jsonObject
+ import kotlinx.serialization.json.jsonPrimitive
+@@ -46,8 +47,11 @@ class ConfigGeneratorTest {
+             val out = rule.jsonObject["outbound"]?.jsonPrimitive?.content
+             if (out in appSelectors) JsonObject(rule.jsonObject + ("outbound" to appSelectors[out]!!)) else rule
+         }
++        // Deviation from the script: TCP handled by gVisor (see ConfigGenerator, "stack").
++        val tun = JsonObject(script["inbounds"]!!.jsonArray[0].jsonObject + ("stack" to JsonPrimitive("gvisor")))
+         return JsonObject(
+             script + mapOf(
++                "inbounds" to JsonArray(listOf(tun)),
+                 "outbounds" to JsonArray(outbounds.take(2)),
+                 "route" to JsonObject(script["route"]!!.jsonObject + ("rules" to JsonArray(rules))),
+             ),
+-- 
+2.56.0
+

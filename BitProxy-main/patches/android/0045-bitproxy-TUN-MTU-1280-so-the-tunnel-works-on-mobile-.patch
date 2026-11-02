@@ -1,0 +1,51 @@
+From 6c1b89627fed423a9ff0fbcd0e3de1c6c8f093f0 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Wed, 30 Sep 2026 18:34:36 +0530
+Subject: [PATCH 45/49] bitproxy: TUN MTU 1280 so the tunnel works on mobile
+ data
+
+On Jio (IPv6-only with 464XLAT) the mobile link allows 1372-byte
+packets. With TUN MTU 1400 the WireGuard packets (1400 + 60) were
+refused by the kernel ("sendmsg: message too long"), the tunnel dropped
+nearly all traffic and the health check kept restarting it. 1280 is the
+IPv6 minimum and fits every network.
+---
+ .../io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt    | 5 ++++-
+ .../nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt   | 3 +++
+ 2 files changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
+index 9f44c7a..b6b8a06 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
+@@ -92,7 +92,10 @@ private val PRETTY = Json { prettyPrint = true }
+ object ConfigGenerator {
+     const val VPN = "VPN"
+     const val DIRECT = "Direct"
+-    private const val TUN_MTU = 1400 // default 9000 made forwarded pages load slowly
++    // 1280 (the IPv6 minimum) fits every network. Mobile data on Jio allows 1372-byte packets;
++    // with 1400 the WireGuard packets (1400 + 60 bytes) were refused ("sendmsg: message too
++    // long") and the tunnel dropped nearly everything. Upstream's default 9000 was slow too.
++    private const val TUN_MTU = 1280
+ 
+     // Proxy-type servers re-open each connection, so any TUN address works: sing-box's usual one.
+     private const val PROXY_TUN_V4 = "172.19.0.1/30"
+diff --git a/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt b/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
+index 0dd0f19..f91740f 100644
+--- a/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
++++ b/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
+@@ -47,8 +47,11 @@ class ConfigGeneratorTest {
+             val out = rule.jsonObject["outbound"]?.jsonPrimitive?.content
+             if (out in appSelectors) JsonObject(rule.jsonObject + ("outbound" to appSelectors[out]!!)) else rule
+         }
++        // Deviation from the script: TUN MTU 1280 (see ConfigGenerator.TUN_MTU).
++        val tun = JsonObject(script["inbounds"]!!.jsonArray[0].jsonObject + ("mtu" to JsonPrimitive(1280)))
+         return JsonObject(
+             script + mapOf(
++                "inbounds" to JsonArray(listOf(tun)),
+                 "outbounds" to JsonArray(outbounds.take(2)),
+                 "route" to JsonObject(script["route"]!!.jsonObject + ("rules" to JsonArray(rules))),
+             ),
+-- 
+2.56.0
+
