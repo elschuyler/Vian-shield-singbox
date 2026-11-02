@@ -1,0 +1,142 @@
+From 3b0f09d0ba89adfbde51560e4a7ae9c4805ef40d Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 02:12:20 +0530
+Subject: [PATCH 32/49] bitproxy: latency test once per 10 min; say BitProxy in
+ UI texts
+
+The dashboard server card started a latency test every time it came
+into view (list scroll, screen change). Automatic tests now run at most
+every 10 minutes and the result survives recomposition; the refresh
+button still tests on demand. Remaining UI texts say BitProxy instead of
+sing-box (Diagnostics keeps 'Core (sing-box)' for the engine version).
+---
+ .../sfa/bitproxy/BitProxyApplier.kt           |  2 +-
+ .../sfa/bitproxy/ui/AppPickerScreen.kt        |  2 +-
+ .../sfa/bitproxy/ui/BitProxyScreen.kt         |  2 +-
+ .../sfa/bitproxy/ui/DashboardServersCard.kt   | 20 +++++++++++++++++--
+ .../sfa/bitproxy/ui/DiagnosticsScreen.kt      |  2 +-
+ .../sfa/bitproxy/ui/TrustedWifiCard.kt        |  2 +-
+ 6 files changed, 23 insertions(+), 7 deletions(-)
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
+index 589121e..5cb1726 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
+@@ -70,7 +70,7 @@ object BitProxyApplier {
+         try {
+             Libbox.checkConfig(json)
+         } catch (e: Exception) {
+-            return Outcome.Failed("sing-box rejected the generated config: ${e.message}")
++            return Outcome.Failed("The generated config was rejected: ${e.message}")
+         }
+ 
+         // Upstream per-app proxy uses VpnService include/exclude lists: excluded apps lose all
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/AppPickerScreen.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/AppPickerScreen.kt
+index 31cc6f9..95db8a8 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/AppPickerScreen.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/AppPickerScreen.kt
+@@ -125,7 +125,7 @@ fun AppPickerScreen(navController: NavController) {
+                 }
+                 Text(
+                     "Switch on = through VPN. Off = Direct. Every app stays inside the VPN tunnel; " +
+-                        "sing-box decides per app. Apps you touched are listed first." +
++                        "BitProxy decides per app. Apps you touched are listed first." +
+                         if (!current.pmAvailable) "\nClones could not be detected here; add them with ⋮ > Add clone." else "",
+                     style = MaterialTheme.typography.bodySmall,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt
+index 506ccf6..699144a 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt
+@@ -252,7 +252,7 @@ fun BitProxyScreen(navController: NavController, serviceStatus: Status) {
+             Column(Modifier.padding(16.dp)) {
+                 Text("Config", style = MaterialTheme.typography.titleMedium)
+                 Text(
+-                    "Builds the sing-box config from your servers and app switches, checks it, " +
++                    "Builds the config from your servers and app switches, checks it, " +
+                         "saves it as the \"BitProxy\" profile and reloads the VPN if it is running. " +
+                         "If the check fails, the running config is kept.",
+                     style = MaterialTheme.typography.bodySmall,
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardServersCard.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardServersCard.kt
+index bf29779..7259b2d 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardServersCard.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardServersCard.kt
+@@ -72,6 +72,16 @@ private class GroupDelays : CommandClient.Handler {
+ 
+ private val AUTO_PICK_MINUTES = listOf(1, 3, 5, 10, 30)
+ 
++/**
++ * Survives the card leaving composition (dashboard list scrolled, screen changed), so opening
++ * the dashboard doesn't start a new latency test every time.
++ */
++private object LatencyTestState {
++    const val AUTO_TEST_EVERY_MS = 10 * 60 * 1000L
++    var lastTest = 0L
++    var tested = false
++}
++
+ /** Pick the active server (or "Fastest") and see which servers answer, without opening Settings. */
+ @Composable
+ fun DashboardServersCard(serviceStatus: Status) {
+@@ -82,7 +92,7 @@ fun DashboardServersCard(serviceStatus: Status) {
+     var auto by remember { mutableStateOf(BitProxyPrefs.autoPick) }
+     var minutes by remember { mutableIntStateOf(BitProxyPrefs.autoPickMinutes) }
+     var testing by remember { mutableStateOf(false) }
+-    var tested by remember { mutableStateOf(false) } // after a test, no delay means "no response"
++    var tested by remember { mutableStateOf(LatencyTestState.tested) } // after a test, no delay means "no response"
+     var status by remember { mutableStateOf<String?>(null) }
+     val handler = remember { GroupDelays() }
+     var collapsed by remember { mutableStateOf(BitProxyPrefs.dashboardServersCollapsed) }
+@@ -99,16 +109,22 @@ fun DashboardServersCard(serviceStatus: Status) {
+     fun test() {
+         if (!running || testing) return
+         testing = true
++        LatencyTestState.lastTest = System.currentTimeMillis()
+         scope.launch(Dispatchers.IO) {
+             runCatching { CommandTarget.standaloneClient().urlTest(ConfigGenerator.VPN) }
+             delay(8000) // results stream in through the group updates
+             withContext(Dispatchers.Main) {
+                 testing = false
+                 tested = true
++                LatencyTestState.tested = true
+             }
+         }
+     }
+-    LaunchedEffect(running) { if (running) test() }
++    // Automatic test only when the last one is old; the refresh button always tests.
++    LaunchedEffect(running) {
++        if (running && System.currentTimeMillis() - LatencyTestState.lastTest > LatencyTestState.AUTO_TEST_EVERY_MS) test()
++        if (!running) LatencyTestState.tested = false
++    }
+ 
+     val list = servers ?: return
+     if (list.isEmpty()) return
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DiagnosticsScreen.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DiagnosticsScreen.kt
+index 292bede..a1d0313 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DiagnosticsScreen.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DiagnosticsScreen.kt
+@@ -102,7 +102,7 @@ private suspend fun collectReport(serviceStatus: Status): String = withContext(D
+     add("Upstream per-app proxy", if (Settings.perAppProxyEnabled) "ON (should be off)" else "off")
+     add("Last Apply", BitProxyPrefs.lastApply)
+     add("App", "${BuildConfig.APPLICATION_ID} ${BuildConfig.VERSION_NAME}")
+-    add("sing-box", runCatching { Libbox.version() }.getOrNull())
++    add("Core (sing-box)", runCatching { Libbox.version() }.getOrNull())
+     add("Android", "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}")
+     lines.joinToString("\n") { (k, v) -> "$k: $v" }
+ }
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/TrustedWifiCard.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/TrustedWifiCard.kt
+index 57958be..62201c8 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/TrustedWifiCard.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/TrustedWifiCard.kt
+@@ -73,7 +73,7 @@ fun TrustedWifiCard() {
+         Column(Modifier.padding(16.dp)) {
+             Text("Trusted Wi-Fi", style = MaterialTheme.typography.titleMedium)
+             Text(
+-                "On these networks every app goes Direct (blocked apps stay blocked). sing-box checks the " +
++                "On these networks every app goes Direct (blocked apps stay blocked). BitProxy checks the " +
+                     "network live, no reload when you join or leave. Needs location \"Allow all the time\" " +
+                     "because Android hides Wi-Fi names otherwise.",
+                 style = MaterialTheme.typography.bodySmall,
+-- 
+2.56.0
+

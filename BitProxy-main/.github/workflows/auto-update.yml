@@ -1,0 +1,180 @@
+# Daily: when sing-box publishes a new stable release and sing-box-for-android's main branch
+# has a commit released as that version, build BitProxy on it (same patches), publish a release with the same
+# tag as sing-box (e.g. v1.14.3) and update versions.env. If the patches don't apply or the
+# build/tests fail, open an issue instead and publish nothing.
+# Beta track: sing-box pre-releases (alpha, beta, rc) newer than the latest stable are built
+# on the app's dev branch and published as GitHub pre-releases; versions.env stays on stable.
+name: Auto update
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # daily, 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      update: ${{ steps.check.outputs.update }}
+      core: ${{ steps.check.outputs.core }}
+      sfa: ${{ steps.check.outputs.sfa }}
+      go: ${{ steps.check.outputs.go }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          source versions.env
+          LATEST=$(git ls-remote --tags --refs https://github.com/SagerNet/sing-box.git 'v*' \
+            | sed 's|.*/||' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          echo "pinned $SING_BOX_TAG, newest stable $LATEST"
+          if [ "$(printf '%s\n%s\n' "$SING_BOX_TAG" "$LATEST" | sort -V | tail -1)" = "$SING_BOX_TAG" ]; then
+            echo "Up to date."; echo "update=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if gh release view "$LATEST" >/dev/null 2>&1; then
+            echo "Release $LATEST already exists."; echo "update=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          git clone -q --filter=blob:none --no-checkout https://github.com/SagerNet/sing-box-for-android.git "$RUNNER_TEMP/sfa"
+          if ! SFA=$(./find-sfa-commit.sh "$RUNNER_TEMP/sfa" main "${LATEST#v}"); then
+            echo "sing-box $LATEST is out, but the app's main branch has no $LATEST yet; waiting for it."
+            echo "update=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          GO=$(git -C "$RUNNER_TEMP/sfa" show "$SFA:version.properties" | sed -n 's/^GO_VERSION=go//p')
+          echo "Update: sing-box $LATEST + app $SFA (Go ${GO:-$GO_VERSION})"
+          {
+            echo "update=true"
+            echo "core=$LATEST"
+            echo "sfa=$SFA"
+            echo "go=${GO:-$GO_VERSION}"
+          } >> "$GITHUB_OUTPUT"
+
+  detect-beta:
+    runs-on: ubuntu-latest
+    outputs:
+      update: ${{ steps.check.outputs.update }}
+      core: ${{ steps.check.outputs.core }}
+      sfa: ${{ steps.check.outputs.sfa }}
+      go: ${{ steps.check.outputs.go }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          source versions.env
+          TAGS=$(git ls-remote --tags --refs https://github.com/SagerNet/sing-box.git 'v*' | sed 's|.*/||')
+          STABLE=$(echo "$TAGS" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          PRE=$(echo "$TAGS" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta|rc)\.[0-9]+$' | sort -V | tail -1)
+          echo "newest stable $STABLE, newest pre-release $PRE"
+          # Only pre-releases of a version that has no stable release yet.
+          if [ -z "$PRE" ] || [ "$(printf '%s\n%s\n' "${PRE%%-*}" "$STABLE" | sort -V | tail -1)" = "$STABLE" ]; then
+            echo "No newer pre-release."; echo "update=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if gh release view "$PRE" >/dev/null 2>&1; then
+            echo "Release $PRE already exists."; echo "update=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          git clone -q --filter=blob:none --no-checkout https://github.com/SagerNet/sing-box-for-android.git "$RUNNER_TEMP/sfa"
+          if ! SFA=$(./find-sfa-commit.sh "$RUNNER_TEMP/sfa" dev "${PRE#v}"); then
+            echo "sing-box $PRE is out, but the app's dev branch never had $PRE; waiting for the next one."
+            echo "update=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          GO=$(git -C "$RUNNER_TEMP/sfa" show "$SFA:version.properties" | sed -n 's/^GO_VERSION=go//p')
+          echo "Beta: sing-box $PRE + app dev $SFA (Go ${GO:-$GO_VERSION})"
+          {
+            echo "update=true"
+            echo "core=$PRE"
+            echo "sfa=$SFA"
+            echo "go=${GO:-$GO_VERSION}"
+          } >> "$GITHUB_OUTPUT"
+
+  build-beta:
+    needs: detect-beta
+    if: needs.detect-beta.outputs.update == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      sing_box_ref: ${{ needs.detect-beta.outputs.core }}
+      sfa_ref: ${{ needs.detect-beta.outputs.sfa }}
+      go_version: ${{ needs.detect-beta.outputs.go }}
+      tag: ${{ needs.detect-beta.outputs.core }}
+      prerelease: true
+    secrets: inherit
+
+  report-beta-failure:
+    needs: [detect-beta, build-beta]
+    if: always() && needs.detect-beta.outputs.update == 'true' && needs.build-beta.result == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CORE: ${{ needs.detect-beta.outputs.core }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE="BitProxy patches fail on sing-box pre-release $CORE"
+          if gh issue list -R "$GITHUB_REPOSITORY" --state open --search "\"$TITLE\" in:title" --json number -q '.[0].number' | grep -q .; then
+            echo "Issue already open."; exit 0
+          fi
+          gh issue create -R "$GITHUB_REPOSITORY" --title "$TITLE" --body "The Beta build on sing-box $CORE (app dev branch) failed, so no pre-release was published. Stable users are not affected.
+
+          Log: $RUN (see the build-log artifact).
+
+          Check locally: \`./check-upstream.sh $CORE dev\`."
+
+  build:
+    needs: detect
+    if: needs.detect.outputs.update == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      sing_box_ref: ${{ needs.detect.outputs.core }}
+      sfa_ref: ${{ needs.detect.outputs.sfa }}
+      go_version: ${{ needs.detect.outputs.go }}
+      tag: ${{ needs.detect.outputs.core }}
+    secrets: inherit
+
+  pin:
+    needs: [detect, build]
+    if: needs.detect.outputs.update == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update versions.env
+        env:
+          CORE: ${{ needs.detect.outputs.core }}
+          SFA: ${{ needs.detect.outputs.sfa }}
+          GO: ${{ needs.detect.outputs.go }}
+        run: |
+          sed -i -e "s/^SING_BOX_TAG=.*/SING_BOX_TAG=$CORE/" \
+                 -e "s/^SFA_COMMIT=.*/SFA_COMMIT=$SFA/" \
+                 -e "s/^GO_VERSION=.*/GO_VERSION=$GO/" versions.env
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Update upstream to sing-box $CORE"
+          git push
+
+  report-failure:
+    needs: [detect, build]
+    if: always() && needs.detect.outputs.update == 'true' && needs.build.result == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CORE: ${{ needs.detect.outputs.core }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITLE="BitProxy patches fail on sing-box $CORE"
+          if gh issue list -R "$GITHUB_REPOSITORY" --state open --search "\"$TITLE\" in:title" --json number -q '.[0].number' | grep -q .; then
+            echo "Issue already open."; exit 0
+          fi
+          gh issue create -R "$GITHUB_REPOSITORY" --title "$TITLE" --body "The automatic build on sing-box $CORE failed, so nothing was published.
+
+          Log: $RUN (see the build-log artifact).
+
+          Fix locally: \`./check-upstream.sh $CORE main\` shows where it fails. Resolve the conflict with \`git am -3\` on the new upstream, run \`./export-patches.sh\`, commit, then run the Auto update workflow again."

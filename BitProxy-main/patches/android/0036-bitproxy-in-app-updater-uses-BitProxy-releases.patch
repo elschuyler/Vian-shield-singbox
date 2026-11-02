@@ -1,0 +1,151 @@
+From be73081ca511a97b92851cf1c61626e63c7d8926 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 11:30:50 +0530
+Subject: [PATCH 36/49] bitproxy: in-app updater uses BitProxy releases
+
+GitHubUpdateChecker reads github.com/zonicisalive/BitProxy releases
+instead of SagerNet/sing-box, picks the APK for this phone's ABI (the
+releases have one per ABI) and also offers releases with the same
+sing-box version but a higher version code (BitProxy builds use
+upstream code * 1000 + build number). Update checks, forced off while
+the updater pointed upstream, are switched on once.
+---
+ .../sfa/vendor/GitHubUpdateChecker.kt         | 27 ++++++++++---------
+ .../nekohasekai/sfa/bitproxy/BitProxyInfo.kt  | 25 +++++++++++++++++
+ .../nekohasekai/sfa/bitproxy/BitProxyPrefs.kt |  4 +++
+ .../sfa/bitproxy/BitProxyServiceHooks.kt      | 11 +++++---
+ 4 files changed, 50 insertions(+), 17 deletions(-)
+
+diff --git a/app/src/github/java/io/nekohasekai/sfa/vendor/GitHubUpdateChecker.kt b/app/src/github/java/io/nekohasekai/sfa/vendor/GitHubUpdateChecker.kt
+index a302977..b76fc9a 100644
+--- a/app/src/github/java/io/nekohasekai/sfa/vendor/GitHubUpdateChecker.kt
++++ b/app/src/github/java/io/nekohasekai/sfa/vendor/GitHubUpdateChecker.kt
+@@ -14,7 +14,7 @@ import java.io.Closeable
+ 
+ class GitHubUpdateChecker : Closeable {
+     companion object {
+-        private const val RELEASES_URL = "https://api.github.com/repos/SagerNet/sing-box/releases"
++        private const val RELEASES_URL = io.nekohasekai.sfa.bitproxy.BitProxyInfo.RELEASES_API
+         private const val METADATA_FILENAME = "SFA-version-metadata.json"
+     }
+ 
+@@ -44,20 +44,20 @@ class GitHubUpdateChecker : Closeable {
+             UpdateTrack.STABLE -> listOf(json.decodeFromString<GitHubRelease>(content))
+             UpdateTrack.BETA -> json.decodeFromString<List<GitHubRelease>>(content)
+         }
+-        val release = releases.filter { !it.draft }.reduceOrNull { best, candidate ->
+-            if (Libbox.compareSemver(candidate.version, best.version)) candidate else best
+-        } ?: return null
+-        if (!Libbox.compareSemver(release.version, BuildConfig.VERSION_NAME)) {
+-            return null
+-        }
+-        val metadata = downloadMetadata(release) ?: return null
++        // BitProxy: tags like v1.14.2-r8 aren't semver-ordered, so pick by the version code in the metadata.
++        val (release, metadata) = releases.filter { !it.draft }
++            .mapNotNull { r -> runCatching { downloadMetadata(r) }.getOrNull()?.let { r to it } }
++            .filter { (_, m) -> io.nekohasekai.sfa.bitproxy.BitProxyInfo.isNewer(m.versionName, m.versionCode) }
++            .maxByOrNull { (_, m) -> m.versionCode } ?: return null
+ 
+         val isLegacy = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
+-        val apkAsset = release.assets.find { asset ->
+-            asset.name.endsWith(".apk") &&
+-                !asset.name.contains("play") &&
+-                asset.name.contains("legacy-android-5") == isLegacy
+-        }
++        val apkAsset = io.nekohasekai.sfa.bitproxy.BitProxyInfo.pickApk(release.assets.map { it.name })
++            ?.let { name -> release.assets.first { it.name == name } }
++            ?: release.assets.find { asset ->
++                asset.name.endsWith(".apk") &&
++                    !asset.name.contains("play") &&
++                    asset.name.contains("legacy-android-5") == isLegacy
++            }
+ 
+         return UpdateInfo(
+             versionCode = metadata.versionCode,
+@@ -111,5 +111,6 @@ class GitHubUpdateChecker : Closeable {
+     @Serializable
+     data class VersionMetadata(
+         @SerialName("version_code") val versionCode: Int = 0,
++        @SerialName("version_name") val versionName: String = "",
+     )
+ }
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyInfo.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyInfo.kt
+index 3538812..0923aff 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyInfo.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyInfo.kt
+@@ -1,10 +1,35 @@
+ // SPDX-License-Identifier: GPL-3.0-or-later
+ package io.nekohasekai.sfa.bitproxy
+ 
++import android.os.Build
++import io.nekohasekai.libbox.Libbox
++import io.nekohasekai.sfa.BuildConfig
++
+ object BitProxyInfo {
+     /** GPLv3: the About screen's "Source Code" must lead to this modified version's source. */
+     const val SOURCE_URL = "https://github.com/zonicisalive/BitProxy"
+ 
+     /** About > Documentation: BitProxy's own guide (setup, features, troubleshooting). */
+     const val DOCS_URL = "$SOURCE_URL#readme"
++
++    /** The in-app updater checks BitProxy's releases, not upstream sing-box's. */
++    const val RELEASES_API = "https://api.github.com/repos/zonicisalive/BitProxy/releases"
++
++    /**
++     * A release is newer if its sing-box version is newer, or if it is the same sing-box version
++     * with a higher version code: BitProxy builds use upstream code * 1000 + build number, so
++     * patch-only releases (same upstream) still reach the phone.
++     */
++    fun isNewer(versionName: String, versionCode: Int): Boolean {
++        if (Libbox.compareSemver(versionName, BuildConfig.VERSION_NAME)) return true
++        if (Libbox.compareSemver(BuildConfig.VERSION_NAME, versionName)) return false
++        return versionCode > BuildConfig.VERSION_CODE
++    }
++
++    /** Release assets are per ABI (SFA-x.y.z-arm64-v8a.apk ...): take this phone's, else universal. */
++    fun pickApk(names: List<String>): String? {
++        val apks = names.filter { it.endsWith(".apk") }
++        for (abi in Build.SUPPORTED_ABIS) apks.firstOrNull { it.endsWith("-$abi.apk") }?.let { return it }
++        return apks.firstOrNull { it.contains("universal") }
++    }
+ }
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
+index e15dcde..dbc834a 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
+@@ -69,6 +69,10 @@ object BitProxyPrefs {
+ 
+     fun setTileApp(slot: Int, key: AppKey?) = prefs.edit { if (key == null) remove("tile_$slot") else putString("tile_$slot", key.toString()) }
+ 
++    var updaterEnabledOnce: Boolean
++        get() = prefs.getBoolean("updater_enabled_once", false)
++        set(value) = prefs.edit { putBoolean("updater_enabled_once", value) }
++
+     var autoPickMinutes: Int
+         get() = prefs.getInt("auto_pick_minutes", 10)
+         set(value) = prefs.edit { putInt("auto_pick_minutes", value) }
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
+index 4e08cf4..62003fb 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
+@@ -49,10 +49,13 @@ object BitProxyServiceHooks {
+ 
+     /** Hook in Application, after upstream's async init (Libbox.setup) finished. */
+     fun onAppInitialized() {
+-        // Upstream's GitHub update checker would offer the official SFA build (other app id and
+-        // signing key), which can't update BitProxy. Keep it off and never ask.
+-        Settings.checkUpdateEnabled = false
+-        Settings.updateCheckPrompted = true
++        // The update checker now reads BitProxy's own releases (BitProxyInfo). Earlier builds
++        // forced it off; switch it on once, after that the user's setting stands.
++        if (!BitProxyPrefs.updaterEnabledOnce) {
++            BitProxyPrefs.updaterEnabledOnce = true
++            Settings.checkUpdateEnabled = true
++            Settings.updateCheckPrompted = true
++        }
+         libboxReady.complete(Unit)
+     }
+ 
+-- 
+2.56.0
+

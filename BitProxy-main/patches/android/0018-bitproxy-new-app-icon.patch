@@ -1,0 +1,158 @@
+From 4985b0ce4a0ffb8ae4af30615dd94c4b1aa37eb2 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 00:51:34 +0530
+Subject: [PATCH 18/49] bitproxy: new app icon
+
+White shield with a forking route (every app enters the tunnel, then goes
+VPN or Direct) on a blue gradient, as an adaptive icon with a themed
+monochrome layer and a layer-list fallback for API 24-25. New resource
+files; the manifest only points android:icon at them, upstream's icon
+files are untouched.
+---
+ app/src/main/AndroidManifest.xml              |  4 ++--
+ .../res/drawable/ic_bitproxy_background.xml   | 22 +++++++++++++++++++
+ .../res/drawable/ic_bitproxy_foreground.xml   | 21 ++++++++++++++++++
+ .../res/drawable/ic_bitproxy_monochrome.xml   | 22 +++++++++++++++++++
+ .../ic_launcher_bitproxy.xml                  |  7 ++++++
+ .../main/res/mipmap/ic_launcher_bitproxy.xml  |  7 ++++++
+ 6 files changed, 81 insertions(+), 2 deletions(-)
+ create mode 100644 app/src/main/res/drawable/ic_bitproxy_background.xml
+ create mode 100644 app/src/main/res/drawable/ic_bitproxy_foreground.xml
+ create mode 100644 app/src/main/res/drawable/ic_bitproxy_monochrome.xml
+ create mode 100644 app/src/main/res/mipmap-anydpi-v26/ic_launcher_bitproxy.xml
+ create mode 100644 app/src/main/res/mipmap/ic_launcher_bitproxy.xml
+
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index 08295b0..652bc4e 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -40,7 +40,7 @@
+         android:dataExtractionRules="@xml/data_extraction_rules"
+         android:description="@string/xposed_description"
+         android:fullBackupContent="@xml/backup_rules"
+-        android:icon="@mipmap/ic_launcher"
++        android:icon="@mipmap/ic_launcher_bitproxy"
+         android:label="@string/app_name"
+         android:supportsRtl="true"
+         android:theme="@style/AppTheme"
+@@ -49,7 +49,7 @@
+         <activity
+             android:name=".compose.MainActivity"
+             android:exported="true"
+-            android:icon="@mipmap/ic_launcher"
++            android:icon="@mipmap/ic_launcher_bitproxy"
+             android:launchMode="singleTask"
+             android:windowSoftInputMode="adjustResize"
+             android:theme="@style/AppTheme">
+diff --git a/app/src/main/res/drawable/ic_bitproxy_background.xml b/app/src/main/res/drawable/ic_bitproxy_background.xml
+new file mode 100644
+index 0000000..d3c39b9
+--- /dev/null
++++ b/app/src/main/res/drawable/ic_bitproxy_background.xml
+@@ -0,0 +1,22 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    xmlns:aapt="http://schemas.android.com/aapt"
++    android:width="108dp"
++    android:height="108dp"
++    android:viewportWidth="108"
++    android:viewportHeight="108">
++    <path android:pathData="M0,0h108v108h-108z">
++        <aapt:attr name="android:fillColor">
++            <gradient
++                android:startX="0"
++                android:startY="0"
++                android:endX="108"
++                android:endY="108"
++                android:type="linear">
++                <item android:color="#FF1D4ED8" android:offset="0" />
++                <item android:color="#FF0F1B4D" android:offset="1" />
++            </gradient>
++        </aapt:attr>
++    </path>
++</vector>
+diff --git a/app/src/main/res/drawable/ic_bitproxy_foreground.xml b/app/src/main/res/drawable/ic_bitproxy_foreground.xml
+new file mode 100644
+index 0000000..265cf6f
+--- /dev/null
++++ b/app/src/main/res/drawable/ic_bitproxy_foreground.xml
+@@ -0,0 +1,21 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<!-- Shield with a forking route: every app enters the tunnel, then goes VPN or Direct. -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="108dp"
++    android:height="108dp"
++    android:viewportWidth="108"
++    android:viewportHeight="108">
++    <path
++        android:fillColor="#FFFFFFFF"
++        android:pathData="M54,26 L76,34 V52 C76,66 66,77 54,82 C42,77 32,66 32,52 V34 Z" />
++    <path
++        android:strokeColor="#FF1D4ED8"
++        android:strokeWidth="4.5"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:pathData="M54,72 V58 M54,58 L45,47 M54,58 L63,47" />
++    <path
++        android:fillColor="#FF1D4ED8"
++        android:pathData="M40.5,41.5 L49.5,43.5 L42.5,50.5 Z M67.5,41.5 L58.5,43.5 L65.5,50.5 Z" />
++</vector>
+diff --git a/app/src/main/res/drawable/ic_bitproxy_monochrome.xml b/app/src/main/res/drawable/ic_bitproxy_monochrome.xml
+new file mode 100644
+index 0000000..bc82354
+--- /dev/null
++++ b/app/src/main/res/drawable/ic_bitproxy_monochrome.xml
+@@ -0,0 +1,22 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<vector xmlns:android="http://schemas.android.com/apk/res/android"
++    android:width="108dp"
++    android:height="108dp"
++    android:viewportWidth="108"
++    android:viewportHeight="108">
++    <path
++        android:strokeColor="#FFFFFFFF"
++        android:strokeWidth="4"
++        android:strokeLineJoin="round"
++        android:pathData="M54,26 L76,34 V52 C76,66 66,77 54,82 C42,77 32,66 32,52 V34 Z" />
++    <path
++        android:strokeColor="#FFFFFFFF"
++        android:strokeWidth="4.5"
++        android:strokeLineCap="round"
++        android:strokeLineJoin="round"
++        android:pathData="M54,72 V58 M54,58 L45,47 M54,58 L63,47" />
++    <path
++        android:fillColor="#FFFFFFFF"
++        android:pathData="M40.5,41.5 L49.5,43.5 L42.5,50.5 Z M67.5,41.5 L58.5,43.5 L65.5,50.5 Z" />
++</vector>
+diff --git a/app/src/main/res/mipmap-anydpi-v26/ic_launcher_bitproxy.xml b/app/src/main/res/mipmap-anydpi-v26/ic_launcher_bitproxy.xml
+new file mode 100644
+index 0000000..00f7832
+--- /dev/null
++++ b/app/src/main/res/mipmap-anydpi-v26/ic_launcher_bitproxy.xml
+@@ -0,0 +1,7 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
++    <background android:drawable="@drawable/ic_bitproxy_background" />
++    <foreground android:drawable="@drawable/ic_bitproxy_foreground" />
++    <monochrome android:drawable="@drawable/ic_bitproxy_monochrome" />
++</adaptive-icon>
+diff --git a/app/src/main/res/mipmap/ic_launcher_bitproxy.xml b/app/src/main/res/mipmap/ic_launcher_bitproxy.xml
+new file mode 100644
+index 0000000..7b8354d
+--- /dev/null
++++ b/app/src/main/res/mipmap/ic_launcher_bitproxy.xml
+@@ -0,0 +1,7 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
++<!-- Fallback for API 24-25 (no adaptive icons). -->
++<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
++    <item android:drawable="@drawable/ic_bitproxy_background" />
++    <item android:drawable="@drawable/ic_bitproxy_foreground" />
++</layer-list>
+-- 
+2.56.0
+

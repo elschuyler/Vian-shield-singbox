@@ -1,0 +1,163 @@
+From b97fbd1a8d5ae673d8a77330407a7e3d373d1cf9 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 00:11:00 +0530
+Subject: [PATCH 08/49] bitproxy: service start fallback and failure
+ notification
+
+- When the system starts the VPN (Always-on, boot) and no usable profile
+  is selected, fall back to the BitProxy profile.
+- Start failures now raise a notification with the sing-box error, so
+  they are visible when the UI is closed (e.g. Always-on after boot).
+- Apply turns off upstream per-app proxy: its VpnService include/exclude
+  lists cut excluded apps off under lockdown.
+Upstream hooks: two one-line calls in BoxService.
+---
+ .../java/io/nekohasekai/sfa/bg/BoxService.kt  |  3 +
+ .../sfa/bitproxy/BitProxyApplier.kt           | 14 +++-
+ .../sfa/bitproxy/BitProxyServiceHooks.kt      | 74 +++++++++++++++++++
+ 3 files changed, 88 insertions(+), 3 deletions(-)
+ create mode 100644 app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bg/BoxService.kt b/app/src/main/java/io/nekohasekai/sfa/bg/BoxService.kt
+index 11174c0..242baeb 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bg/BoxService.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bg/BoxService.kt
+@@ -28,6 +28,7 @@ import io.nekohasekai.libbox.PlatformInterface
+ import io.nekohasekai.libbox.SystemProxyStatus
+ import io.nekohasekai.sfa.Application
+ import io.nekohasekai.sfa.R
++import io.nekohasekai.sfa.bitproxy.BitProxyServiceHooks
+ import io.nekohasekai.sfa.compose.MainActivity
+ import io.nekohasekai.sfa.constant.Action
+ import io.nekohasekai.sfa.constant.Alert
+@@ -123,6 +124,7 @@ class BoxService(private val service: Service, private val platformInterface: Pl
+ 
+     private suspend fun startService() {
+         try {
++            BitProxyServiceHooks.beforeStart()
+             val selectedProfileId = Settings.selectedProfile
+             if (selectedProfileId == -1L) {
+                 stopAndAlert(Alert.EmptyConfiguration)
+@@ -325,6 +327,7 @@ class BoxService(private val service: Service, private val platformInterface: Pl
+     }
+ 
+     private suspend fun stopAndAlert(type: Alert, message: String? = null) {
++        BitProxyServiceHooks.onStartFailed(type, message)
+         Settings.startedByUser = false
+         Settings.dataStore.flush()
+         val pfd = fileDescriptor
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
+index 66a0589..bac43ec 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
+@@ -56,9 +56,10 @@ object BitProxyApplier {
+     private suspend fun applyLocked(serviceRunning: Boolean, ipv6: Boolean): Outcome {
+         val servers = BitProxyStore.servers()
+         val routes = AppResolver.scan().routes(BitProxyPrefs.apps)
+-        val result = ConfigGenerator.generate(GeneratorInput(servers.map { it.conf }, BitProxyPrefs.selectedServer, routes, ipv6))
+-        if (result is GenerateResult.Error) return Outcome.Failed(result.message)
+-        result as GenerateResult.Ok
++        var result = when (val r = ConfigGenerator.generate(GeneratorInput(servers.map { it.conf }, BitProxyPrefs.selectedServer, routes, ipv6))) {
++            is GenerateResult.Error -> return Outcome.Failed(r.message)
++            is GenerateResult.Ok -> r
++        }
+         val json = result.json
+ 
+         try {
+@@ -67,6 +68,13 @@ object BitProxyApplier {
+             return Outcome.Failed("sing-box rejected the generated config: ${e.message}")
+         }
+ 
++        // Upstream per-app proxy uses VpnService include/exclude lists: excluded apps lose all
++        // internet under lockdown ("Block connections without VPN"). BitProxy routes by rules instead.
++        if (Settings.perAppProxyEnabled) {
++            Settings.perAppProxyEnabled = false
++            result = result.copy(warnings = result.warnings + "Turned off Settings > Profile Override > Per-app proxy: every app must enter the tunnel")
++        }
++
+         val profile = ensureProfile()
+         val file = File(profile.typed.path)
+         val old = file.takeIf { it.isFile }?.readText()
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
+new file mode 100644
+index 0000000..382f1a2
+--- /dev/null
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyServiceHooks.kt
+@@ -0,0 +1,74 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++package io.nekohasekai.sfa.bitproxy
++
++import android.app.NotificationChannel
++import android.app.NotificationManager
++import android.app.PendingIntent
++import android.content.Intent
++import android.os.Build
++import android.util.Log
++import androidx.core.app.NotificationCompat
++import io.nekohasekai.sfa.Application
++import io.nekohasekai.sfa.R
++import io.nekohasekai.sfa.compose.MainActivity
++import io.nekohasekai.sfa.constant.Alert
++import io.nekohasekai.sfa.database.ProfileManager
++import io.nekohasekai.sfa.database.Settings
++
++/** Small entry points called from upstream BoxService (one line each). */
++object BitProxyServiceHooks {
++    private const val TAG = "BitProxy"
++    const val CHANNEL = "bitproxy_alerts"
++    private const val FAILED_ID = 0xB17
++
++    /**
++     * Before the service reads the selected profile. When the system starts us (Always-on,
++     * boot, restart) and no usable profile is selected, fall back to the BitProxy profile.
++     */
++    suspend fun beforeStart() {
++        try {
++            val selected = Settings.selectedProfile
++            if (selected != -1L && ProfileManager.get(selected) != null) return
++            val own = ProfileManager.get(BitProxyPrefs.profileId) ?: return
++            Log.i(TAG, "no usable profile selected ($selected); starting ${own.name}")
++            Settings.selectedProfile = own.id
++        } catch (e: Exception) {
++            Log.w(TAG, "beforeStart", e)
++        }
++    }
++
++    /** The service stopped with an error: tell the user even if the UI is closed. */
++    fun onStartFailed(type: Alert, message: String?) {
++        try {
++            val nm = Application.notification
++            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++                nm.createNotificationChannel(NotificationChannel(CHANNEL, "BitProxy alerts", NotificationManager.IMPORTANCE_HIGH))
++            }
++            val text = when (type) {
++                Alert.EmptyConfiguration -> "No profile to start. Open BitProxy and tap Apply."
++                Alert.RequestVPNPermission -> "VPN permission missing. Open the app and start the VPN once."
++                else -> message?.takeIf { it.isNotBlank() } ?: type.name
++            }
++            val open = PendingIntent.getActivity(
++                Application.application,
++                0,
++                Intent(Application.application, MainActivity::class.java),
++                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
++            )
++            nm.notify(
++                FAILED_ID,
++                NotificationCompat.Builder(Application.application, CHANNEL)
++                    .setSmallIcon(R.drawable.ic_menu)
++                    .setContentTitle("VPN failed to start")
++                    .setContentText(text)
++                    .setStyle(NotificationCompat.BigTextStyle().bigText(text))
++                    .setContentIntent(open)
++                    .setAutoCancel(true)
++                    .build(),
++            )
++            Log.w(TAG, "start failed: $type $message")
++        } catch (e: Exception) {
++            Log.w(TAG, "onStartFailed", e)
++        }
++    }
++}
+-- 
+2.56.0
+

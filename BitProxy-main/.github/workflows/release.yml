@@ -1,0 +1,170 @@
+# Builds BitProxy from upstream + patches/, signs it and publishes a GitHub release.
+# Manual run: pinned versions from versions.env, tag = the sing-box tag (e.g. v1.14.2), or
+# v1.14.2-r<run> if that release already exists (patch changes on the same upstream).
+# Also called by auto-update.yml with a newer upstream.
+# Secrets: KEYSTORE_BASE64 (base64 of the keystore), KEYSTORE_PASS, ALIAS_NAME, ALIAS_PASS.
+name: Release
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      sing_box_ref:
+        description: "sing-box tag to build on (default: versions.env)"
+        type: string
+        default: ""
+      sfa_ref:
+        description: "sing-box-for-android commit to build on (default: versions.env)"
+        type: string
+        default: ""
+      go_version:
+        description: "Go version (default: versions.env)"
+        type: string
+        default: ""
+      tag:
+        description: "Release tag (default: the sing-box tag)"
+        type: string
+        default: ""
+      prerelease:
+        description: "Publish as a pre-release (Beta update track)"
+        type: boolean
+        default: false
+    secrets:
+      KEYSTORE_BASE64:
+        required: true
+      KEYSTORE_PASS:
+        required: true
+      ALIAS_NAME:
+        required: true
+      ALIAS_PASS:
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags and history for the release notes
+
+      - name: Versions
+        env:
+          IN_CORE: ${{ inputs.sing_box_ref }}
+          IN_SFA: ${{ inputs.sfa_ref }}
+          IN_GO: ${{ inputs.go_version }}
+          IN_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          source versions.env
+          CORE=${IN_CORE:-$SING_BOX_TAG}
+          SFA=${IN_SFA:-$SFA_COMMIT}
+          GO=${IN_GO:-$GO_VERSION}
+          TAG=$IN_TAG
+          # Build number: 1 + releases already published for this sing-box version (see build-release.sh)
+          BUILD=$(( $(gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName -q ".[].tagName" | grep -cE "^${CORE}(-r[0-9]+)?$" || true) + 1 ))
+          if [ -z "$TAG" ]; then
+            TAG=$CORE
+            gh release view "$TAG" >/dev/null 2>&1 && TAG="$CORE-r$GITHUB_RUN_NUMBER"
+          fi
+          {
+            echo "TRY_SING_BOX_REF=$CORE"
+            echo "TRY_SFA_REF=$SFA"
+            echo "GO_VERSION=$GO"
+            echo "RELEASE_TAG=$TAG"
+            echo "BITPROXY_BUILD=$BUILD"
+            echo "NDK_VERSION=$NDK_VERSION"
+            echo "GOMOBILE_VERSION=$GOMOBILE_VERSION"
+          } >> "$GITHUB_ENV"
+          echo "Building sing-box $CORE + SFA $SFA as $TAG (build $BUILD)"
+
+      # "What's new": this repo's commits since the last release, plus the sing-box version when it
+      # changed. The app's update prompt shows this text.
+      - name: Release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          # Stable notes compare with the last stable release, pre-release notes with the last release.
+          FILTER=$([ "$PRERELEASE" = true ] || echo --exclude-pre-releases)
+          PREV=$(gh release list -R "$GITHUB_REPOSITORY" $FILTER --limit 1 --json tagName -q '.[0].tagName' || true)
+          NOTES=$RUNNER_TEMP/notes.md
+          {
+            echo "## What's new"
+            echo
+            if [ -n "$PREV" ] && git rev-parse -q --verify "refs/tags/$PREV" >/dev/null; then
+              git log "$PREV..HEAD" --no-merges --format='- %s' | grep -v '^- Update upstream to sing-box' || true
+            fi
+            if [ -n "$PREV" ] && [ "$(echo "$PREV" | sed 's/-r[0-9]*$//')" != "$TRY_SING_BOX_REF" ]; then
+              echo "- sing-box $TRY_SING_BOX_REF ([changes](https://github.com/SagerNet/sing-box/releases/tag/$TRY_SING_BOX_REF))"
+            fi
+          } > "$NOTES"
+          [ "$(wc -l < "$NOTES")" -gt 2 ] || echo "- Rebuilt, no changes" >> "$NOTES"
+          {
+            echo
+            echo "Built on sing-box $TRY_SING_BOX_REF and sing-box-for-android $TRY_SFA_REF, with the patches in this repository."
+            echo 'Install `BitProxy-*-arm64-v8a.apk` on current phones (update in place: same signing key).'
+          } >> "$NOTES"
+          cat "$NOTES"
+          echo "NOTES_FILE=$NOTES" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Android SDK packages
+        run: |
+          SM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          (yes || true) | "$SM" --licenses > /dev/null
+          "$SM" "ndk;$NDK_VERSION" "platforms;android-36" "platforms;android-37.1" "build-tools;36.0.0" > /dev/null
+
+      - name: gomobile
+        run: |
+          go install github.com/sagernet/gomobile/cmd/gomobile@$GOMOBILE_VERSION
+          go install github.com/sagernet/gomobile/cmd/gobind@$GOMOBILE_VERSION
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then echo "::error::KEYSTORE_BASE64 secret missing"; exit 1; fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "RELEASE_KEYSTORE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+
+      - name: Build (apply patches, libbox, unit tests, APK)
+        env:
+          LOCAL_PROPERTIES: |
+            KEYSTORE_PASS=${{ secrets.KEYSTORE_PASS }}
+            ALIAS_NAME=${{ secrets.ALIAS_NAME }}
+            ALIAS_PASS=${{ secrets.ALIAS_PASS }}
+        shell: bash # includes pipefail, so a failed build isn't hidden by tee
+        run: ./build-release.sh 2>&1 | tee build.log
+
+      - name: Keep the build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: BitProxy ${{ env.RELEASE_TAG }}
+          body_path: ${{ env.NOTES_FILE }}
+          prerelease: ${{ inputs.prerelease == true }}
+          files: |
+            ${{ env.APK_DIR }}/*.apk
+            ${{ env.APK_DIR }}/*-version-metadata.json

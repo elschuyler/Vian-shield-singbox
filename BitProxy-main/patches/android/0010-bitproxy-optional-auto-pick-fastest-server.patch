@@ -1,0 +1,143 @@
+From 742b6b2b1f51ccfd5796efa924502ca47ec2f591 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 00:19:47 +0530
+Subject: [PATCH 10/49] bitproxy: optional auto-pick fastest server
+
+'Auto-pick fastest server' turns the VPN group into a sing-box urltest
+group. It only contains servers sharing the selected server's tunnel
+address, so switching never breaks the TUN address requirement.
+Latency tests and manual switching stay in the upstream Groups UI.
+---
+ .../sfa/bitproxy/BitProxyApplier.kt           |  2 +-
+ .../nekohasekai/sfa/bitproxy/BitProxyPrefs.kt |  4 ++++
+ .../sfa/bitproxy/config/ConfigGenerator.kt    |  7 ++++--
+ .../sfa/bitproxy/ui/BitProxyScreen.kt         | 24 +++++++++++++++++++
+ .../bitproxy/config/ConfigGeneratorTest.kt    |  8 +++++++
+ 5 files changed, 42 insertions(+), 3 deletions(-)
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
+index bac43ec..1f7c889 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
+@@ -56,7 +56,7 @@ object BitProxyApplier {
+     private suspend fun applyLocked(serviceRunning: Boolean, ipv6: Boolean): Outcome {
+         val servers = BitProxyStore.servers()
+         val routes = AppResolver.scan().routes(BitProxyPrefs.apps)
+-        var result = when (val r = ConfigGenerator.generate(GeneratorInput(servers.map { it.conf }, BitProxyPrefs.selectedServer, routes, ipv6))) {
++        var result = when (val r = ConfigGenerator.generate(GeneratorInput(servers.map { it.conf }, BitProxyPrefs.selectedServer, routes, ipv6, BitProxyPrefs.autoPick))) {
+             is GenerateResult.Error -> return Outcome.Failed(r.message)
+             is GenerateResult.Ok -> r
+         }
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
+index 1d5c104..15f1178 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
+@@ -38,6 +38,10 @@ object BitProxyPrefs {
+         }.toMap()
+         set(value) = prefs.edit { putStringSet("apps", value.map { (k, m) -> "$k=${m.name}" }.toSet()) }
+ 
++    var autoPick: Boolean
++        get() = prefs.getBoolean("auto_pick", false)
++        set(value) = prefs.edit { putBoolean("auto_pick", value) }
++
+     /** Id of the upstream profile that BitProxy writes its generated config into. */
+     var profileId: Long
+         get() = prefs.getLong("profile_id", -1)
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
+index a6d15e8..eeff66e 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
+@@ -31,6 +31,8 @@ data class GeneratorInput(
+     val apps: List<AppRoute>,
+     /** True when the underlying network has global IPv6 (automatic IPv6 mode). */
+     val ipv6: Boolean = false,
++    /** "VPN" becomes a urltest group that picks the fastest server instead of a manual selector. */
++    val autoPick: Boolean = false,
+ )
+ 
+ sealed interface GenerateResult {
+@@ -158,10 +160,11 @@ object ConfigGenerator {
+             putJsonArray("endpoints") { group.forEach { add(endpoint(input.servers[it], tags[it])) } }
+             putJsonArray("outbounds") {
+                 addJsonObject {
+-                    put("type", "selector")
++                    // Only servers sharing the TUN address are in the group, so auto-switching is safe.
++                    put("type", if (input.autoPick) "urltest" else "selector")
+                     put("tag", VPN)
+                     put("outbounds", buildJsonArray { group.forEach { add(tags[it]) } })
+-                    put("default", tags[selectedIndex])
++                    if (!input.autoPick) put("default", tags[selectedIndex])
+                     put("interrupt_exist_connections", true)
+                 }
+                 // A direct outbound must not have "detour" ("detour is not supported in direct context").
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt
+index bee7760..52114fe 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt
+@@ -32,6 +32,7 @@ import androidx.compose.material3.ListItem
+ import androidx.compose.material3.ListItemDefaults
+ import androidx.compose.material3.MaterialTheme
+ import androidx.compose.material3.RadioButton
++import androidx.compose.material3.Switch
+ import androidx.compose.material3.Text
+ import androidx.compose.material3.TextButton
+ import androidx.compose.material3.TopAppBar
+@@ -112,6 +113,7 @@ fun BitProxyScreen(navController: NavController, serviceStatus: Status) {
+     var reload by remember { mutableIntStateOf(0) }
+     var message by remember { mutableStateOf<String?>(null) }
+     var applying by remember { mutableStateOf(false) }
++    var autoPick by remember { mutableStateOf(BitProxyPrefs.autoPick) }
+     var confirmDelete by remember { mutableStateOf<StoredServer?>(null) }
+     val appCounts = remember { BitProxyPrefs.apps.values.let { v -> v.count { it == BitProxyPrefs.Mode.VPN } to v.count { it == BitProxyPrefs.Mode.DIRECT } } }
+ 
+@@ -177,6 +179,28 @@ fun BitProxyScreen(navController: NavController, serviceStatus: Status) {
+                     colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                 )
+             }
++            if (servers.size > 1) {
++                ListItem(
++                    headlineContent = { Text("Auto-pick fastest server") },
++                    supportingContent = {
++                        Text(
++                            "Tests the servers regularly and uses the fastest one with the selected server's tunnel address. " +
++                                "Off: the selected server is used; switch live in the Groups tab.",
++                        )
++                    },
++                    trailingContent = {
++                        Switch(checked = autoPick, onCheckedChange = {
++                            autoPick = it
++                            BitProxyPrefs.autoPick = it
++                        })
++                    },
++                    modifier = Modifier.clickable {
++                        autoPick = !autoPick
++                        BitProxyPrefs.autoPick = autoPick
++                    },
++                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
++                )
++            }
+             FilledTonalButton(
+                 onClick = { importLauncher.launch(arrayOf("*/*")) },
+                 modifier = Modifier.padding(16.dp),
+diff --git a/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt b/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
+index fb9ef24..5364af3 100644
+--- a/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
++++ b/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
+@@ -139,6 +139,14 @@ class ConfigGeneratorTest {
+         assertFalse("detour" in direct)
+     }
+ 
++    @Test fun autoPickUsesUrltest() {
++        val r = ok(GeneratorInput(servers("two-servers"), null, twoServerApps, autoPick = true))
++        val vpn = r.config["outbounds"]!!.jsonArray[0].jsonObject
++        assertEquals("urltest", vpn["type"]!!.jsonPrimitive.content)
++        assertFalse("default" in vpn) // urltest has no default
++        assertEquals(listOf("nl-free#1", "us-free-2"), vpn["outbounds"]!!.jsonArray.map { it.jsonPrimitive.content })
++    }
++
+     @Test fun noServersIsAnError() {
+         assertTrue(ConfigGenerator.generate(GeneratorInput(emptyList(), null, twoServerApps)) is GenerateResult.Error)
+     }
+-- 
+2.56.0
+

@@ -1,0 +1,150 @@
+From 7cd592d9b66c2aa5360d88a6632ed21cc70a11e7 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 01:18:21 +0530
+Subject: [PATCH 23/49] bitproxy: live upload/download per app on the dashboard
+
+The Apps card shows each app's current speed next to its name, summed
+per uid from sing-box connection events (listed apps always carry their
+uid because their rules match on user_id). The connection subscription
+only runs while the card is expanded and the VPN is on.
+---
+ .../nekohasekai/sfa/bitproxy/ui/AppTraffic.kt | 36 ++++++++++++++
+ .../sfa/bitproxy/ui/DashboardAppsCard.kt      | 47 +++++++++++++++++--
+ 2 files changed, 80 insertions(+), 3 deletions(-)
+ create mode 100644 app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/AppTraffic.kt
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/AppTraffic.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/AppTraffic.kt
+new file mode 100644
+index 0000000..3a7ce26
+--- /dev/null
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/AppTraffic.kt
+@@ -0,0 +1,36 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++package io.nekohasekai.sfa.bitproxy.ui
++
++import io.nekohasekai.libbox.ConnectionEvents
++import io.nekohasekai.libbox.Libbox
++import io.nekohasekai.sfa.utils.CommandClient
++
++/** Per-uid bytes from sing-box connection events; [drain] returns and resets the window. */
++internal class AppTraffic : CommandClient.Handler {
++    private val uidOf = HashMap<String, Int>()
++    private val window = HashMap<Int, LongArray>() // uid -> [up, down]
++
++    @Synchronized
++    override fun writeConnectionEvents(events: ConnectionEvents) {
++        if (events.reset) uidOf.clear()
++        val it = events.iterator()
++        while (it.hasNext()) {
++            val e = it.next()
++            when (e.type) {
++                Libbox.ConnectionEventNew.toInt() -> e.connection?.processInfo?.let { uidOf[e.id] = it.userID }
++                Libbox.ConnectionEventUpdate.toInt() -> {
++                    val uid = uidOf[e.id] ?: e.connection?.processInfo?.userID ?: continue
++                    val w = window.getOrPut(uid) { LongArray(2) }
++                    w[0] += e.uplinkDelta
++                    w[1] += e.downlinkDelta
++                }
++                Libbox.ConnectionEventClosed.toInt() -> uidOf.remove(e.id)
++            }
++        }
++    }
++
++    @Synchronized
++    fun drain(): Map<Int, LongArray> = HashMap(window).also { window.clear() }
++}
++
++internal fun rateText(up: Long, down: Long, seconds: Double) = "↑ ${Libbox.formatBytes((up / seconds).toLong())}/s  ↓ ${Libbox.formatBytes((down / seconds).toLong())}/s"
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardAppsCard.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardAppsCard.kt
+index 1c90977..421226a 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardAppsCard.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardAppsCard.kt
+@@ -23,6 +23,7 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+ import androidx.compose.material3.Text
+ import androidx.compose.material3.TextButton
+ import androidx.compose.runtime.Composable
++import androidx.compose.runtime.DisposableEffect
+ import androidx.compose.runtime.LaunchedEffect
+ import androidx.compose.runtime.getValue
+ import androidx.compose.runtime.mutableStateOf
+@@ -43,6 +44,7 @@ import io.nekohasekai.sfa.bitproxy.config.Mode
+ import io.nekohasekai.sfa.compose.base.GlobalEventBus
+ import io.nekohasekai.sfa.compose.base.UiEvent
+ import io.nekohasekai.sfa.constant.Status
++import io.nekohasekai.sfa.utils.CommandClient
+ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.Job
+ import kotlinx.coroutines.delay
+@@ -56,7 +58,7 @@ fun LazyListScope.bitProxyDashboardItems(serviceStatus: Status) {
+     item { DashboardAppsCard(serviceStatus) }
+ }
+ 
+-private data class AppRow(val key: AppKey, val label: String)
++private data class AppRow(val key: AppKey, val label: String, val uid: Int?)
+ 
+ private val Mode.label get() = when (this) {
+     Mode.VPN -> "VPN"
+@@ -76,11 +78,37 @@ private fun DashboardAppsCard(serviceStatus: Status) {
+     var status by remember { mutableStateOf<String?>(null) }
+     var applyJob by remember { mutableStateOf<Job?>(null) }
+     var collapsed by remember { mutableStateOf(BitProxyPrefs.dashboardAppsCollapsed) }
++    val running = serviceStatus == Status.Started
++    var rates by remember { mutableStateOf<Map<Int, LongArray>>(emptyMap()) }
++    val traffic = remember { AppTraffic() }
++    // Live per-app speed, only while the card is open and the VPN runs.
++    DisposableEffect(running, collapsed) {
++        val client = CommandClient(scope, CommandClient.ConnectionType.Connections, traffic, localOnly = true)
++        val ticker = if (running && !collapsed) {
++            client.connect()
++            scope.launch {
++                while (true) {
++                    delay(2000)
++                    rates = traffic.drain()
++                }
++            }
++        } else {
++            null
++        }
++        onDispose {
++            ticker?.cancel()
++            client.disconnect()
++            rates = emptyMap()
++        }
++    }
+ 
+     LaunchedEffect(Unit) {
+         rows = withContext(Dispatchers.IO) {
+             val scan = AppResolver.scan()
+-            BitProxyPrefs.apps.keys.map { AppRow(it, scan.label(it.packageName) + Uid.userLabel(it.userId)) }
++            BitProxyPrefs.apps.keys.map { key ->
++                val uid = scan.uids[key] ?: scan.uids[AppKey(key.packageName, scan.currentUser)]?.let { Uid.of(key.userId, Uid.appId(it)) }
++                AppRow(key, scan.label(key.packageName) + Uid.userLabel(key.userId), uid)
++            }
+                 .sortedWith(compareBy({ it.label.lowercase() }, { it.key.userId }))
+         }
+     }
+@@ -144,7 +172,20 @@ private fun DashboardAppsCard(serviceStatus: Status) {
+                 else -> list.forEach { row ->
+                     val mode = choices[row.key] ?: Mode.DIRECT
+                     ListItem(
+-                        headlineContent = { Text(row.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
++                        headlineContent = {
++                            Row(verticalAlignment = Alignment.CenterVertically) {
++                                Text(row.label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
++                                val r = row.uid?.let { rates[it] }
++                                if (running && mode != Mode.BLOCK) {
++                                    Text(
++                                        "  " + rateText(r?.get(0) ?: 0, r?.get(1) ?: 0, 2.0),
++                                        style = MaterialTheme.typography.labelSmall,
++                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
++                                        maxLines = 1,
++                                    )
++                                }
++                            }
++                        },
+                         leadingContent = { AppIcon(row.key.packageName) },
+                         supportingContent = {
+                             SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(top = 4.dp)) {
+-- 
+2.56.0
+

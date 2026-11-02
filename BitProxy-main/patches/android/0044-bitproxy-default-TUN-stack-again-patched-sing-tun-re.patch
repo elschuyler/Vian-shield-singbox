@@ -1,0 +1,113 @@
+From 920866416c1c5f23e3519149c0641f37c6fdd378 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 15:05:24 +0530
+Subject: [PATCH 44/49] bitproxy: default TUN stack again (patched sing-tun
+ re-listens); no reload when the config is unchanged
+
+The gvisor stack avoided the destroyed-listener bug but handles all TCP
+in user space, which made loading slower. libbox is now built with a
+sing-tun that listens again when Android destroys the socket
+(patches/sing-tun), so the default kernel-TCP stack is back.
+
+Apply with a config identical to the running one no longer reloads
+sing-box, so an Apply or a package change that changes nothing doesn't
+drop connections.
+---
+ .../nekohasekai/sfa/bitproxy/BitProxyApplier.kt   | 15 +++++++++++++--
+ .../sfa/bitproxy/config/ConfigGenerator.kt        |  9 ++++-----
+ .../nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt |  2 +-
+ .../sfa/bitproxy/config/ConfigGeneratorTest.kt    |  3 ---
+ 4 files changed, 18 insertions(+), 11 deletions(-)
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
+index 36e8a25..37492e3 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyApplier.kt
+@@ -31,7 +31,7 @@ object BitProxyApplier {
+     private val lock = Mutex() // Apply button, network changes and app installs may race
+ 
+     sealed interface Outcome {
+-        data class Applied(val result: GenerateResult.Ok, val reloaded: Boolean) : Outcome
++        data class Applied(val result: GenerateResult.Ok, val reloaded: Boolean, val unchanged: Boolean = false) : Outcome
+ 
+         data class Failed(val message: String) : Outcome
+     }
+@@ -51,7 +51,13 @@ object BitProxyApplier {
+                 Outcome.Failed("Unexpected error: ${e.message ?: e.javaClass.simpleName}")
+             }
+             BitProxyPrefs.recordApply(outcome)
+-            EventLog.log(if (outcome is Outcome.Applied) "applied: ${outcome.result.selectedTag}, ${outcome.result.appRuleCount} app rules, reloaded=${outcome.reloaded}" else "apply failed: ${(outcome as Outcome.Failed).message}")
++            EventLog.log(
++                when {
++                    outcome is Outcome.Applied && outcome.unchanged -> "apply: config unchanged, VPN not interrupted"
++                    outcome is Outcome.Applied -> "applied: ${outcome.result.selectedTag}, ${outcome.result.appRuleCount} app rules, reloaded=${outcome.reloaded}"
++                    else -> "apply failed: ${(outcome as Outcome.Failed).message}"
++                },
++            )
+             AppTileService.requestUpdate()
+             outcome
+         }
+@@ -94,6 +100,11 @@ object BitProxyApplier {
+         val old = file.takeIf { it.isFile }?.readText()
+         BitProxyPrefs.appliedIpv6 = result.ipv6
+         BitProxyPrefs.healthCheck = result.allWireGuard
++        // Same config as the one running: don't reload, a reload drops every connection for a moment.
++        if (old == json && serviceRunning && Settings.selectedProfile == profile.id && !Settings.rebuildServiceMode()) {
++            Log.i(TAG, "config unchanged, no reload")
++            return Outcome.Applied(result, reloaded = true, unchanged = true)
++        }
+         if (old == json) return Outcome.Applied(result, activate(profile, serviceRunning))
+         if (old != null && old != "{}") previousFile.writeText(old)
+         writeAtomically(file, json)
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
+index 0492a53..9f44c7a 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/config/ConfigGenerator.kt
+@@ -224,11 +224,10 @@ object ConfigGenerator {
+                     put("mtu", TUN_MTU)
+                     put("auto_route", true)
+                     put("strict_route", true)
+-                    // gvisor, not the default "mixed": mixed hands TCP to a kernel socket listening on the
+-                    // TUN address. Android can destroy that socket (seen on OxygenOS: an app installed or
+-                    // removed, VPN rebuilt); sing-box then silently stops accepting and every new TCP
+-                    // connection is refused until a restart, while DNS and UDP keep working.
+-                    put("stack", "gvisor")
++                    // Default stack ("mixed": kernel TCP, fast). Android can destroy its listening socket on
++                    // the TUN address (seen on OxygenOS when the VPN is rebuilt); every new TCP connection
++                    // was then refused until a restart. libbox is built with a patched sing-tun that listens
++                    // again (patches/sing-tun), so the slower gvisor stack isn't needed.
+                 }
+             }
+             putJsonArray("endpoints") {
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt
+index 69cdc76..b818c22 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/BitProxyScreen.kt
+@@ -278,7 +278,7 @@ fun BitProxyScreen(navController: NavController, serviceStatus: Status) {
+                                 is BitProxyApplier.Outcome.Failed -> "✗ " + o.message
+                                 is BitProxyApplier.Outcome.Applied -> buildString {
+                                     append("✓ Config applied")
+-                                    append(if (o.reloaded) " and VPN reloaded" else ". Start the VPN from the Dashboard")
++                                    append(if (o.unchanged) " (nothing changed, VPN not interrupted)" else if (o.reloaded) " and VPN reloaded" else ". Start the VPN from the Dashboard")
+                                     append("\n\nServer: ${o.result.selectedTag}\nTUN: ${o.result.tunAddresses.joinToString()}\nDNS: ${o.result.dnsServer}\nApp rules: ${o.result.appRuleCount}")
+                                     o.result.warnings.forEach { append("\n\n⚠ $it") }
+                                 }
+diff --git a/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt b/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
+index c67d7ca..0dd0f19 100644
+--- a/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
++++ b/app/src/test/java/io/nekohasekai/sfa/bitproxy/config/ConfigGeneratorTest.kt
+@@ -47,11 +47,8 @@ class ConfigGeneratorTest {
+             val out = rule.jsonObject["outbound"]?.jsonPrimitive?.content
+             if (out in appSelectors) JsonObject(rule.jsonObject + ("outbound" to appSelectors[out]!!)) else rule
+         }
+-        // Deviation from the script: TCP handled by gVisor (see ConfigGenerator, "stack").
+-        val tun = JsonObject(script["inbounds"]!!.jsonArray[0].jsonObject + ("stack" to JsonPrimitive("gvisor")))
+         return JsonObject(
+             script + mapOf(
+-                "inbounds" to JsonArray(listOf(tun)),
+                 "outbounds" to JsonArray(outbounds.take(2)),
+                 "route" to JsonObject(script["route"]!!.jsonObject + ("rules" to JsonArray(rules))),
+             ),
+-- 
+2.56.0
+
