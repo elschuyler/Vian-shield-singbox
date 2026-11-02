@@ -1,0 +1,81 @@
+From eb3e0c888b46ef0cb94d4746847391b3474de443 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 01:58:51 +0530
+Subject: [PATCH 31/49] bitproxy: avoid API 26 calls (minSdk 24)
+
+Release lint (NewApi) caught ProcessBuilder.redirectOutput(File) and
+Process.waitFor(timeout) in the pm scan and log export; both need API
+26 and would crash on Android 7. Use a shell redirect and a polling
+wait instead.
+---
+ .../nekohasekai/sfa/bitproxy/AppResolver.kt   | 20 ++++++++++++++++---
+ .../sfa/bitproxy/ui/DiagnosticsScreen.kt      |  3 +--
+ 2 files changed, 18 insertions(+), 5 deletions(-)
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/AppResolver.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/AppResolver.kt
+index 3b2a157..72f1860 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/AppResolver.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/AppResolver.kt
+@@ -10,7 +10,6 @@ import io.nekohasekai.sfa.Application
+ import io.nekohasekai.sfa.bitproxy.BitProxyPrefs.AppKey
+ import io.nekohasekai.sfa.bitproxy.config.AppRoute
+ import io.nekohasekai.sfa.bitproxy.config.Mode
+-import java.util.concurrent.TimeUnit
+ 
+ /** Android uid = userId * 100000 + appId. */
+ object Uid {
+@@ -112,9 +111,10 @@ object AppResolver {
+         var out: java.io.File? = null
+         return try {
+             out = java.io.File.createTempFile("pmlist", ".txt", Application.application.cacheDir)
+-            val process = ProcessBuilder("pm", "list", "packages", "-U").redirectErrorStream(true).redirectOutput(out).start()
++            // Shell redirect: ProcessBuilder.redirectOutput(File) needs API 26, minSdk is 24.
++            val process = ProcessBuilder("sh", "-c", "exec pm list packages -U > '${out.path}' 2>&1").start()
+             process.outputStream.close()
+-            if (!process.waitFor(20, TimeUnit.SECONDS)) {
++            if (!process.waitForCompat(20)) {
+                 process.destroy()
+                 Log.w(TAG, "pm list packages -U timed out")
+                 return null
+@@ -130,3 +130,17 @@ object AppResolver {
+         }
+     }
+ }
++
++/** Process.waitFor(timeout, unit) needs API 26; minSdk is 24. */
++internal fun java.lang.Process.waitForCompat(seconds: Long): Boolean {
++    val deadline = System.currentTimeMillis() + seconds * 1000
++    while (true) {
++        try {
++            exitValue()
++            return true
++        } catch (_: IllegalThreadStateException) {
++        }
++        if (System.currentTimeMillis() > deadline) return false
++        Thread.sleep(100)
++    }
++}
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DiagnosticsScreen.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DiagnosticsScreen.kt
+index ba2d47f..292bede 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DiagnosticsScreen.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DiagnosticsScreen.kt
+@@ -60,7 +60,6 @@ import kotlinx.serialization.json.jsonArray
+ import kotlinx.serialization.json.jsonObject
+ import kotlinx.serialization.json.jsonPrimitive
+ import java.io.File
+-import java.util.concurrent.TimeUnit
+ 
+ /** Everything worth knowing when something doesn't work. Never contains key material. */
+ private suspend fun collectReport(serviceStatus: Status): String = withContext(Dispatchers.IO) {
+@@ -115,7 +114,7 @@ private suspend fun exportLog(context: Context, report: String): File = withCont
+     val logcat = runCatching {
+         val p = ProcessBuilder("logcat", "-d", "-v", "time", "--pid=${Process.myPid()}", "-t", "2000").redirectErrorStream(true).start()
+         val text = p.inputStream.bufferedReader().readText()
+-        p.waitFor(10, TimeUnit.SECONDS)
++        p.waitFor() // output already fully read, so this returns at once
+         text
+     }.getOrElse { "logcat failed: ${it.message}" }
+     val text = "== BitProxy diagnostics ==\n$report\n\n== Applied config ==\n$config\n\n== Log ==\n$logcat"
+-- 
+2.56.0
+

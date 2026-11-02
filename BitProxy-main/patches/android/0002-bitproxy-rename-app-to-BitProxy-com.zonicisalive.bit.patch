@@ -1,0 +1,98 @@
+From 6b660f68a03b3582c330759a2003e713d39d2ba0 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 23:37:14 +0530
+Subject: [PATCH 02/49] bitproxy: rename app to BitProxy
+ (com.zonicisalive.bitproxy)
+
+Only applicationId and the display name change; the Kotlin namespace
+stays io.nekohasekai.sfa so upstream patches keep applying cleanly.
+---
+ app/build.gradle.kts                       | 2 +-
+ app/src/main/res/values-fa/strings.xml     | 2 +-
+ app/src/main/res/values-ru-rRU/strings.xml | 2 +-
+ app/src/main/res/values-zh-rCN/strings.xml | 2 +-
+ app/src/main/res/values-zh-rTW/strings.xml | 2 +-
+ app/src/main/res/values/strings.xml        | 2 +-
+ 6 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index 85b7869..006ee94 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -68,7 +68,7 @@ android {
+     }
+ 
+     defaultConfig {
+-        applicationId = "io.nekohasekai.sfa"
++        applicationId = "com.zonicisalive.bitproxy"
+         minSdk = 24
+         targetSdk = 37
+         versionCode = getVersionProps("VERSION_CODE").toInt()
+diff --git a/app/src/main/res/values-fa/strings.xml b/app/src/main/res/values-fa/strings.xml
+index d2aeb5b..e0f7960 100644
+--- a/app/src/main/res/values-fa/strings.xml
++++ b/app/src/main/res/values-fa/strings.xml
+@@ -1,7 +1,7 @@
+ <?xml version='1.0' encoding='utf-8'?>
+ <resources>
+     <!-- App -->
+-    <string name="app_name" translatable="false">sing-box</string>
++    <string name="app_name" translatable="false">BitProxy</string>
+     <string name="app_version_title">نسخه برنامه</string>
+     <string name="language">زبان</string>
+     <string name="system_default">پیش‌فرض سیستم</string>
+diff --git a/app/src/main/res/values-ru-rRU/strings.xml b/app/src/main/res/values-ru-rRU/strings.xml
+index 652e509..193de30 100644
+--- a/app/src/main/res/values-ru-rRU/strings.xml
++++ b/app/src/main/res/values-ru-rRU/strings.xml
+@@ -1,7 +1,7 @@
+ <?xml version='1.0' encoding='utf-8'?>
+ <resources>
+     <!-- App -->
+-    <string name="app_name" translatable="false">sing-box</string>
++    <string name="app_name" translatable="false">BitProxy</string>
+     <string name="app_version_title">Версия приложения</string>
+     <string name="language">Язык</string>
+     <string name="system_default">Системный по умолчанию</string>
+diff --git a/app/src/main/res/values-zh-rCN/strings.xml b/app/src/main/res/values-zh-rCN/strings.xml
+index 88ee5df..fe8589a 100644
+--- a/app/src/main/res/values-zh-rCN/strings.xml
++++ b/app/src/main/res/values-zh-rCN/strings.xml
+@@ -1,7 +1,7 @@
+ <?xml version='1.0' encoding='utf-8'?>
+ <resources>
+     <!-- App -->
+-    <string name="app_name" translatable="false">sing-box</string>
++    <string name="app_name" translatable="false">BitProxy</string>
+     <string name="app_version_title">应用版本</string>
+     <string name="language">语言</string>
+     <string name="system_default">跟随系统</string>
+diff --git a/app/src/main/res/values-zh-rTW/strings.xml b/app/src/main/res/values-zh-rTW/strings.xml
+index d656b2e..a733d50 100644
+--- a/app/src/main/res/values-zh-rTW/strings.xml
++++ b/app/src/main/res/values-zh-rTW/strings.xml
+@@ -1,7 +1,7 @@
+ <?xml version='1.0' encoding='utf-8'?>
+ <resources>
+     <!-- App -->
+-    <string name="app_name" translatable="false">sing-box</string>
++    <string name="app_name" translatable="false">BitProxy</string>
+     <string name="app_version_title">應用程式版本</string>
+     <string name="language">語言</string>
+     <string name="system_default">跟隨系統</string>
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index fa24713..183ade4 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -1,7 +1,7 @@
+ <?xml version='1.0' encoding='utf-8'?>
+ <resources>
+     <!-- App -->
+-    <string name="app_name" translatable="false">sing-box</string>
++    <string name="app_name" translatable="false">BitProxy</string>
+     <string name="app_version_title">App version</string>
+     <string name="language">Language</string>
+     <string name="system_default">System default</string>
+-- 
+2.56.0
+

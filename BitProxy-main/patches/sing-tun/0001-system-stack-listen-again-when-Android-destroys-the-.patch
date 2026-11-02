@@ -1,0 +1,138 @@
+From 9cc41d6979c00f6ccd7d1750cf1a35c3a96c7666 Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 14:51:24 +0530
+Subject: [PATCH] system stack: listen again when Android destroys the TCP
+ listener
+
+Android can destroy the listening socket on the TUN address
+(SOCK_DESTROY, seen on OxygenOS 16 when the VPN is rebuilt). The accept
+loop then returned silently and every new TCP connection was refused
+until the stack restarted, while UDP and ICMP kept working. Listen again
+on the same address and port instead.
+---
+ stack_system.go | 57 +++++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 53 insertions(+), 4 deletions(-)
+
+diff --git a/stack_system.go b/stack_system.go
+index 7d96624..08f0c0a 100644
+--- a/stack_system.go
++++ b/stack_system.go
+@@ -7,6 +7,7 @@ import (
+ 	"net/netip"
+ 	"os"
+ 	"slices"
++	"sync"
+ 	"syscall"
+ 	"time"
+ 
+@@ -57,6 +58,9 @@ type System struct {
+ 	frontHeadroom        int
+ 	txChecksumOffload    bool
+ 	multiPendingPackets  bool
++	listenConfig         net.ListenConfig
++	listenerAccess       sync.Mutex
++	closed               bool
+ }
+ 
+ type Session struct {
+@@ -126,6 +130,9 @@ func (s *System) Close() error {
+ 	if s.udpNat != nil {
+ 		s.udpNat.Close()
+ 	}
++	s.listenerAccess.Lock()
++	defer s.listenerAccess.Unlock()
++	s.closed = true
+ 	return common.Close(
+ 		s.tcpListener,
+ 		s.tcpListener6,
+@@ -153,6 +160,7 @@ func (s *System) start() error {
+ 			return nil
+ 		})
+ 	}
++	s.listenConfig = listener
+ 	var tcpListener net.Listener
+ 	var err error
+ 	if s.inet4NextAddress.IsValid() {
+@@ -169,7 +177,7 @@ func (s *System) start() error {
+ 		s.tcpListener = tcpListener
+ 		s.tcpPort = M.SocksaddrFromNet(tcpListener.Addr()).Port
+ 		s.tcpNat4 = NewNat(s.ctx, s.udpTimeout)
+-		go s.acceptLoop(tcpListener, s.tcpNat4)
++		go s.acceptLoop(tcpListener, s.tcpNat4, "tcp4")
+ 	}
+ 	if s.inet6NextAddress.IsValid() {
+ 		for range 3 {
+@@ -185,7 +193,7 @@ func (s *System) start() error {
+ 		s.tcpListener6 = tcpListener
+ 		s.tcpPort6 = M.SocksaddrFromNet(tcpListener.Addr()).Port
+ 		s.tcpNat6 = NewNat(s.ctx, s.udpTimeout)
+-		go s.acceptLoop(tcpListener, s.tcpNat6)
++		go s.acceptLoop(tcpListener, s.tcpNat6, "tcp6")
+ 	}
+ 	udpNATOptions := s.udpNATOptions
+ 	udpNATOptions.Handler = s.handler
+@@ -387,11 +395,15 @@ func (s *System) processPacket(packet []byte) bool {
+ 	return writeBack
+ }
+ 
+-func (s *System) acceptLoop(listener net.Listener, tcpNat *TCPNat) {
++func (s *System) acceptLoop(listener net.Listener, tcpNat *TCPNat, network string) {
+ 	for {
+ 		conn, err := listener.Accept()
+ 		if err != nil {
+-			return
++			listener = s.relisten(listener, network, err)
++			if listener == nil {
++				return
++			}
++			continue
+ 		}
+ 		connPort := M.SocksaddrFromNet(conn.RemoteAddr()).Port
+ 		session := tcpNat.LookupBack(connPort, 0)
+@@ -403,6 +415,43 @@ func (s *System) acceptLoop(listener net.Listener, tcpNat *TCPNat) {
+ 	}
+ }
+ 
++// relisten replaces a TCP listener that failed without being closed by us. Android can destroy it
++// (SOCK_DESTROY, e.g. while the VPN is rebuilt); without a new one, every new TCP connection is
++// refused until the stack restarts. Listens again on the same address and port, so the NAT keeps
++// working. Returns nil once the stack is closed.
++func (s *System) relisten(old net.Listener, network string, cause error) net.Listener {
++	if errors.Is(cause, net.ErrClosed) {
++		return nil
++	}
++	address := old.Addr().String()
++	old.Close()
++	s.logger.Warn("tcp listener ", address, " lost (", cause, "), listening again")
++	for {
++		time.Sleep(100 * time.Millisecond)
++		if s.ctx.Err() != nil {
++			return nil
++		}
++		s.listenerAccess.Lock()
++		if s.closed {
++			s.listenerAccess.Unlock()
++			return nil
++		}
++		listener, err := listenNetworkNamespace(s.ctx, s.netNs, s.listenConfig, network, address)
++		if err == nil {
++			if network == "tcp4" {
++				s.tcpListener = listener
++			} else {
++				s.tcpListener6 = listener
++			}
++			s.listenerAccess.Unlock()
++			return listener
++		}
++		s.listenerAccess.Unlock()
++		s.logger.Warn("listen again on ", address, ": ", err)
++		time.Sleep(time.Second)
++	}
++}
++
+ func (s *System) dispatchIPv4(ipHdr header.IPv4, destination netip.Addr) bool {
+ 	switch ipHdr.TransportProtocol() {
+ 	case header.TCPProtocolNumber:
+-- 
+2.56.0
+

@@ -1,0 +1,95 @@
+From 33fdafa77b2a44fd42e7943f86ca10ccfbb03a9a Mon Sep 17 00:00:00 2001
+From: ZonicExists <71136987+zonicisalive@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 00:51:34 +0530
+Subject: [PATCH 17/49] bitproxy: collapsible apps card on the dashboard
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Tapping the card header folds it to a one-line summary
+('2 VPN · 1 Direct'); the state is remembered.
+---
+ .../nekohasekai/sfa/bitproxy/BitProxyPrefs.kt |  4 +++
+ .../sfa/bitproxy/ui/DashboardAppsCard.kt      | 29 +++++++++++++++++--
+ 2 files changed, 30 insertions(+), 3 deletions(-)
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
+index ec01f42..9e4daa7 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/BitProxyPrefs.kt
+@@ -48,6 +48,10 @@ object BitProxyPrefs {
+         get() = prefs.getString("vpn_domains", "")!!.lines().map { it.trim() }.filter { it.isNotEmpty() }
+         set(value) = prefs.edit { putString("vpn_domains", value.joinToString("\n")) }
+ 
++    var dashboardAppsCollapsed: Boolean
++        get() = prefs.getBoolean("dashboard_apps_collapsed", false)
++        set(value) = prefs.edit { putBoolean("dashboard_apps_collapsed", value) }
++
+     var autoPick: Boolean
+         get() = prefs.getBoolean("auto_pick", false)
+         set(value) = prefs.edit { putBoolean("auto_pick", value) }
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardAppsCard.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardAppsCard.kt
+index dd86f73..1955cae 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardAppsCard.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/ui/DashboardAppsCard.kt
+@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.padding
+ import androidx.compose.foundation.lazy.LazyListScope
+ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.outlined.Apps
++import androidx.compose.material.icons.outlined.ExpandLess
++import androidx.compose.material.icons.outlined.ExpandMore
+ import androidx.compose.material3.Card
+ import androidx.compose.material3.CardDefaults
+ import androidx.compose.material3.Icon
+@@ -64,6 +66,7 @@ private fun DashboardAppsCard(serviceStatus: Status) {
+     var rows by remember { mutableStateOf<List<AppRow>?>(null) }
+     var status by remember { mutableStateOf<String?>(null) }
+     var applyJob by remember { mutableStateOf<Job?>(null) }
++    var collapsed by remember { mutableStateOf(BitProxyPrefs.dashboardAppsCollapsed) }
+ 
+     LaunchedEffect(Unit) {
+         rows = withContext(Dispatchers.IO) {
+@@ -92,17 +95,37 @@ private fun DashboardAppsCard(serviceStatus: Status) {
+         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+     ) {
+         Column(Modifier.padding(vertical = 8.dp)) {
+-            Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
++            Row(
++                Modifier
++                    .clickable {
++                        collapsed = !collapsed
++                        BitProxyPrefs.dashboardAppsCollapsed = collapsed
++                    }
++                    .padding(horizontal = 16.dp),
++                verticalAlignment = Alignment.CenterVertically,
++            ) {
+                 Icon(Icons.Outlined.Apps, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+-                Text("  Apps", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
++                Column(Modifier.weight(1f).padding(start = 12.dp)) {
++                    Text("Apps", style = MaterialTheme.typography.titleMedium)
++                    if (collapsed) {
++                        val vpn = choices.values.count { it == Mode.VPN }
++                        Text("$vpn VPN · ${choices.size - vpn} Direct", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
++                    }
++                }
+                 TextButton(onClick = { GlobalEventBus.tryEmit(UiEvent.Navigate("settings/bitproxy/apps")) }) { Text("Manage") }
++                Icon(
++                    if (collapsed) Icons.Outlined.ExpandMore else Icons.Outlined.ExpandLess,
++                    contentDescription = if (collapsed) "Expand" else "Collapse",
++                )
+             }
+             status?.let {
+                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp))
+             }
+-            val list = rows
++            val list = rows.takeUnless { collapsed }
+             when {
++                collapsed -> {}
+                 list == null -> {}
++
+                 list.isEmpty() -> Text(
+                     "No apps set up yet. Tap Manage to pick apps for the VPN.",
+                     style = MaterialTheme.typography.bodyMedium,
+-- 
+2.56.0
+

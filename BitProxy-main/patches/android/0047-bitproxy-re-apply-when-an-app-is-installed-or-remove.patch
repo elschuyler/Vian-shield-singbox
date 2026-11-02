@@ -1,0 +1,77 @@
+From c9eee85919f0a40d86bef3c08c1a06b77af553e5 Mon Sep 17 00:00:00 2001
+From: zonicisalive <71136987+zonicisalive@users.noreply.github.com>
+Date: Thu, 15 Oct 2026 00:17:57 +0530
+Subject: [PATCH 47/49] bitproxy: re-apply when an app is installed or removed
+ in a clone or work profile
+
+Package broadcasts only arrive for our own user, so an app reinstalled
+in an OxygenOS clone (users 997-999) kept the old rule until the next
+Apply and went Direct. LauncherApps reports package changes in every
+profile of our user. Verified on the emulator with a clone profile.
+---
+ .../io/nekohasekai/sfa/bitproxy/AppWatcher.kt | 31 +++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/app/src/main/java/io/nekohasekai/sfa/bitproxy/AppWatcher.kt b/app/src/main/java/io/nekohasekai/sfa/bitproxy/AppWatcher.kt
+index b030a02..9bad97a 100644
+--- a/app/src/main/java/io/nekohasekai/sfa/bitproxy/AppWatcher.kt
++++ b/app/src/main/java/io/nekohasekai/sfa/bitproxy/AppWatcher.kt
+@@ -10,8 +10,11 @@ import android.content.Context
+ import android.content.Intent
+ import android.content.IntentFilter
+ import android.content.pm.ApplicationInfo
++import android.content.pm.LauncherApps
+ import android.content.pm.PackageManager
+ import android.os.Build
++import android.os.Handler
++import android.os.Looper
+ import android.os.Process
+ import android.util.Log
+ import androidx.core.app.NotificationCompat
+@@ -74,8 +77,35 @@ object AppWatcher {
+         }
+     }
+ 
++    /**
++     * Installs and removals in clone/work profiles (OxygenOS clones are users 997-999). Android sends
++     * the package broadcasts above only for our own user, so a clone reinstalled with a new uid kept
++     * the old rule and went Direct. LauncherApps reports every profile of our user.
++     */
++    private val profileCallback = object : LauncherApps.Callback() {
++        private fun changed(pkg: String, user: android.os.UserHandle, what: String) {
++            if (user == Process.myUserHandle()) return // handled by packageReceiver
++            val userId = user.hashCode() // UserHandle.hashCode() is the user id (getIdentifier() isn't public API)
++            if (BitProxyPrefs.apps.containsKey(AppKey(pkg, userId))) reapply("$what $pkg in user $userId")
++        }
++
++        override fun onPackageAdded(packageName: String, user: android.os.UserHandle) = changed(packageName, user, "installed")
++
++        override fun onPackageRemoved(packageName: String, user: android.os.UserHandle) = changed(packageName, user, "removed")
++
++        override fun onPackageChanged(packageName: String, user: android.os.UserHandle) = Unit
++
++        override fun onPackagesAvailable(packageNames: Array<out String>, user: android.os.UserHandle, replacing: Boolean) =
++            packageNames.forEach { changed(it, user, "available") }
++
++        override fun onPackagesUnavailable(packageNames: Array<out String>, user: android.os.UserHandle, replacing: Boolean) = Unit
++    }
++
+     fun start() {
+         if (registered) return
++        runCatching {
++            Application.application.getSystemService(LauncherApps::class.java).registerCallback(profileCallback, Handler(Looper.getMainLooper()))
++        }.onFailure { Log.w(TAG, "LauncherApps callback", it) }
+         val ctx = Application.application
+         ContextCompat.registerReceiver(
+             ctx,
+@@ -93,6 +123,7 @@ object AppWatcher {
+ 
+     fun stop() {
+         if (!registered) return
++        runCatching { Application.application.getSystemService(LauncherApps::class.java).unregisterCallback(profileCallback) }
+         val ctx = Application.application
+         runCatching { ctx.unregisterReceiver(packageReceiver) }
+         runCatching { ctx.unregisterReceiver(actionReceiver) }
+-- 
+2.56.0
+
