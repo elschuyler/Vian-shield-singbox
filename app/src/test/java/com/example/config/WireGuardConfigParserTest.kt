@@ -1,5 +1,6 @@
 package com.example.config
 
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -457,5 +458,257 @@ class WireGuardConfigParserTest {
         assertTrue(result.isSuccess)
         val profile = result.getOrThrow()
         assertEquals("Valid custom MTU within [1280, 1420] must be preserved", 1360, profile.mtu)
+    }
+
+    // =========================================================================
+    // Phase 1.19: sing-box 1.14 DNS Schema Regression Tests
+    // =========================================================================
+
+    @Test
+    fun dns_importedProfileDns_generatesModernDnsServerObject() {
+        val conf = """
+            [Interface]
+            PrivateKey = $validPrivateKey
+            Address = 10.0.0.2/24
+            DNS = 1.1.1.1, 8.8.8.8
+            [Peer]
+            PublicKey = $validPublicKey
+            Endpoint = 198.51.100.1:51820
+        """.trimIndent()
+
+        val profile = WireGuardConfigParser.parse(conf).getOrThrow()
+        val jsonStr = WireGuardConfigParser.toSingBoxJson(profile)
+        val root = JSONObject(jsonStr)
+
+        val dns = root.getJSONObject("dns")
+        val servers = dns.getJSONArray("servers")
+        assertEquals(2, servers.length())
+
+        val s1 = servers.getJSONObject(0)
+        assertEquals("udp", s1.getString("type"))
+        assertEquals("1.1.1.1", s1.getString("server"))
+        assertEquals(53, s1.getInt("server_port"))
+        assertEquals("wg-out", s1.getString("detour"))
+        assertFalse("Legacy 'address' field must not be present", s1.has("address"))
+
+        val s2 = servers.getJSONObject(1)
+        assertEquals("udp", s2.getString("type"))
+        assertEquals("8.8.8.8", s2.getString("server"))
+        assertEquals(53, s2.getInt("server_port"))
+        assertEquals("wg-out", s2.getString("detour"))
+        assertFalse("Legacy 'address' field must not be present", s2.has("address"))
+    }
+
+    @Test
+    fun dns_googleDnsSelection_generatesModernDnsServerObject() {
+        val conf = WireGuardConfigParser.createDefaultTestConfig()
+        val profile = WireGuardConfigParser.parse(conf).getOrThrow()
+        val jsonStr = WireGuardConfigParser.toSingBoxJson(profile, dnsProviderOverride = "Google Public DNS (8.8.8.8)")
+        val root = JSONObject(jsonStr)
+
+        val dns = root.getJSONObject("dns")
+        val servers = dns.getJSONArray("servers")
+        assertTrue("Google DNS must generate at least 2 servers", servers.length() >= 2)
+
+        val s1 = servers.getJSONObject(0)
+        assertEquals("udp", s1.getString("type"))
+        assertEquals("8.8.8.8", s1.getString("server"))
+        assertEquals(53, s1.getInt("server_port"))
+        assertEquals("wg-out", s1.getString("detour"))
+        assertFalse("Legacy 'address' field must not be present", s1.has("address"))
+
+        val s2 = servers.getJSONObject(1)
+        assertEquals("udp", s2.getString("type"))
+        assertEquals("8.8.4.4", s2.getString("server"))
+        assertEquals(53, s2.getInt("server_port"))
+        assertEquals("wg-out", s2.getString("detour"))
+        assertFalse("Legacy 'address' field must not be present", s2.has("address"))
+    }
+
+    @Test
+    fun dns_cloudflareDnsSelection_generatesModernDnsServerObject() {
+        val conf = WireGuardConfigParser.createDefaultTestConfig()
+        val profile = WireGuardConfigParser.parse(conf).getOrThrow()
+        val jsonStr = WireGuardConfigParser.toSingBoxJson(profile, dnsProviderOverride = "Cloudflare DNS (1.1.1.1)")
+        val root = JSONObject(jsonStr)
+
+        val dns = root.getJSONObject("dns")
+        val servers = dns.getJSONArray("servers")
+        assertTrue("Cloudflare DNS must generate at least 2 servers", servers.length() >= 2)
+
+        val s1 = servers.getJSONObject(0)
+        assertEquals("udp", s1.getString("type"))
+        assertEquals("1.1.1.1", s1.getString("server"))
+        assertEquals(53, s1.getInt("server_port"))
+        assertEquals("wg-out", s1.getString("detour"))
+        assertFalse("Legacy 'address' field must not be present", s1.has("address"))
+
+        val s2 = servers.getJSONObject(1)
+        assertEquals("udp", s2.getString("type"))
+        assertEquals("1.0.0.1", s2.getString("server"))
+        assertEquals(53, s2.getInt("server_port"))
+        assertEquals("wg-out", s2.getString("detour"))
+        assertFalse("Legacy 'address' field must not be present", s2.has("address"))
+    }
+
+    @Test
+    fun dns_everyGeneratedServer_hasRequiredFieldsForTransport() {
+        // 1. Plain UDP
+        val udp = WireGuardConfigParser.parseDnsServerObject("9.9.9.9")
+        assertEquals("udp", udp.getString("type"))
+        assertEquals("9.9.9.9", udp.getString("server"))
+        assertEquals(53, udp.getInt("server_port"))
+        assertEquals("wg-out", udp.getString("detour"))
+        assertTrue(udp.has("tag"))
+        assertFalse(udp.has("address"))
+
+        // 2. TCP
+        val tcp = WireGuardConfigParser.parseDnsServerObject("tcp://8.8.8.8:5353")
+        assertEquals("tcp", tcp.getString("type"))
+        assertEquals("8.8.8.8", tcp.getString("server"))
+        assertEquals(5353, tcp.getInt("server_port"))
+        assertEquals("wg-out", tcp.getString("detour"))
+        assertTrue(tcp.has("tag"))
+        assertFalse(tcp.has("address"))
+
+        // 3. DNS-over-TLS (DoT)
+        val tls = WireGuardConfigParser.parseDnsServerObject("tls://dns.google:853")
+        assertEquals("tls", tls.getString("type"))
+        assertEquals("dns.google", tls.getString("server"))
+        assertEquals(853, tls.getInt("server_port"))
+        assertEquals("wg-out", tls.getString("detour"))
+        assertTrue(tls.has("tls"))
+        assertEquals("dns.google", tls.getJSONObject("tls").getString("server_name"))
+        assertTrue(tls.has("tag"))
+        assertFalse(tls.has("address"))
+
+        // 4. DNS-over-HTTPS (DoH)
+        val https = WireGuardConfigParser.parseDnsServerObject("https://cloudflare-dns.com/dns-query")
+        assertEquals("https", https.getString("type"))
+        assertEquals("cloudflare-dns.com", https.getString("server"))
+        assertEquals(443, https.getInt("server_port"))
+        assertEquals("/dns-query", https.getString("path"))
+        assertEquals("wg-out", https.getString("detour"))
+        assertTrue(https.has("tls"))
+        assertEquals("cloudflare-dns.com", https.getJSONObject("tls").getString("server_name"))
+        assertTrue(https.has("tag"))
+        assertFalse(https.has("address"))
+
+        // 5. Local
+        val local = WireGuardConfigParser.parseDnsServerObject("local")
+        assertEquals("local", local.getString("type"))
+        assertTrue(local.has("tag"))
+        assertFalse(local.has("address"))
+    }
+
+    @Test
+    fun dns_rulesReferenceExistingServerTags() {
+        val conf = WireGuardConfigParser.createDefaultTestConfig()
+        val profile = WireGuardConfigParser.parse(conf).getOrThrow()
+        val jsonStr = WireGuardConfigParser.toSingBoxJson(profile)
+        val root = JSONObject(jsonStr)
+
+        val dns = root.getJSONObject("dns")
+        val servers = dns.getJSONArray("servers")
+        val serverTags = (0 until servers.length()).map { servers.getJSONObject(it).getString("tag") }.toSet()
+
+        if (dns.has("rules")) {
+            val rules = dns.getJSONArray("rules")
+            for (i in 0 until rules.length()) {
+                val rule = rules.getJSONObject(i)
+                if (rule.has("server")) {
+                    val serverTag = rule.getString("server")
+                    assertTrue(
+                        "DNS rule[$i] references server '$serverTag' which must exist in dns.servers tags",
+                        serverTags.contains(serverTag)
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun dns_finalSelection_referencesExistingServer() {
+        val conf = WireGuardConfigParser.createDefaultTestConfig()
+        val profile = WireGuardConfigParser.parse(conf).getOrThrow()
+        val jsonStr = WireGuardConfigParser.toSingBoxJson(profile)
+        val root = JSONObject(jsonStr)
+
+        val dns = root.getJSONObject("dns")
+        assertTrue("dns must specify a final default server", dns.has("final"))
+        val finalTag = dns.getString("final")
+
+        val servers = dns.getJSONArray("servers")
+        val serverTags = (0 until servers.length()).map { servers.getJSONObject(it).getString("tag") }.toSet()
+        assertTrue(
+            "dns.final tag '$finalTag' must exist in dns.servers: $serverTags",
+            serverTags.contains(finalTag)
+        )
+    }
+
+    @Test
+    fun dns_noLegacyDnsFieldsOrFormatsRemain() {
+        val conf = WireGuardConfigParser.createDefaultTestConfig()
+        val profile = WireGuardConfigParser.parse(conf).getOrThrow()
+        val jsonStr = WireGuardConfigParser.toSingBoxJson(profile)
+
+        val root = JSONObject(jsonStr)
+        val dns = root.getJSONObject("dns")
+        val servers = dns.getJSONArray("servers")
+
+        for (i in 0 until servers.length()) {
+            val s = servers.getJSONObject(i)
+            assertFalse("Legacy 'address' must not exist in servers[$i]", s.has("address"))
+            assertFalse("Legacy 'address_resolver' must not exist in servers[$i]", s.has("address_resolver"))
+            assertFalse("Legacy 'independent_cache' must not exist in servers[$i]", s.has("independent_cache"))
+            assertTrue("Modern 'type' must exist in servers[$i]", s.has("type"))
+            assertTrue("Modern 'tag' must exist in servers[$i]", s.has("tag"))
+            assertTrue("Modern 'server' must exist in servers[$i]", s.has("server"))
+        }
+
+        // Validate via SingBoxAdapter.checkConfig
+        val adapter = com.example.engine.SingBoxAdapter(allowSimulationForTesting = true)
+        val validResult = adapter.checkConfig(jsonStr)
+        assertTrue("Modern configuration must pass checkConfig: ${validResult.exceptionOrNull()?.message}", validResult.isSuccess)
+
+        // Construct a legacy config to verify checkConfig strictly rejects it
+        val legacyJson = JSONObject(jsonStr)
+        val legacyDns = legacyJson.getJSONObject("dns")
+        val legacyServers = JSONArray().apply {
+            put(JSONObject().apply {
+                put("tag", "legacy-dns")
+                put("address", "1.1.1.1")
+                put("detour", "wg-out")
+            })
+        }
+        legacyDns.put("servers", legacyServers)
+
+        val legacyResult = adapter.checkConfig(legacyJson.toString())
+        assertTrue("Legacy configuration with 'address' must be rejected", legacyResult.isFailure)
+        val errMsg = legacyResult.exceptionOrNull()?.message.orEmpty()
+        assertTrue(
+            "Error message must mention deprecated legacy DNS server formats: $errMsg",
+            errMsg.contains("legacy DNS server formats are deprecated in sing-box 1.12.0 and removed in sing-box 1.14.0")
+        )
+    }
+
+    @Test
+    fun dns_nativeLibboxCheckConfig_integrationTest() {
+        val conf = WireGuardConfigParser.createDefaultTestConfig()
+        val profile = WireGuardConfigParser.parse(conf).getOrThrow()
+        val jsonStr = WireGuardConfigParser.toSingBoxJson(profile)
+
+        val isNative = com.example.engine.SingBoxAdapter.isNativeAvailable()
+        if (isNative) {
+            val nativeAdapter = com.example.engine.SingBoxAdapter(allowSimulationForTesting = false)
+            val result = nativeAdapter.checkConfig(jsonStr)
+            assertTrue("Native Libbox.checkConfig must validate the modern JSON without error", result.isSuccess)
+        } else {
+            // JVM-only test runner: native library is not on host classpath
+            println("[TEST INFO] Host JVM test runner has no ARM64 native libbox.so. Native Libbox.checkConfig skipped on JVM as expected.")
+            val simulationAdapter = com.example.engine.SingBoxAdapter(allowSimulationForTesting = true)
+            val result = simulationAdapter.checkConfig(jsonStr)
+            assertTrue("Simulation schema check must pass on JVM", result.isSuccess)
+        }
     }
 }

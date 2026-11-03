@@ -21,6 +21,7 @@ import com.example.engine.SingBoxStorageManager
 import com.example.logging.LogCategory
 import com.example.logging.OperationalLogCatcher
 import com.example.logging.StartupContextTracker
+import org.json.JSONObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -43,14 +44,18 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
 
         private const val NOTIFICATION_CHANNEL_ID = "vianshield_vpn_channel"
         private const val NOTIFICATION_ID = 1001
+        const val EXTRA_DNS_PROVIDER = "com.example.vpn.DNS_PROVIDER"
 
         private val _vpnState = MutableStateFlow<VpnState>(VpnState.Stopped)
         val vpnState: StateFlow<VpnState> = _vpnState.asStateFlow()
 
-        fun startIntent(context: Context, configString: String): Intent {
+        fun startIntent(context: Context, configString: String, dnsProvider: String? = null): Intent {
             return Intent(context, VianshieldVpnService::class.java).apply {
                 action = ACTION_START_VPN
                 putExtra(EXTRA_CONFIG_STRING, configString)
+                if (dnsProvider != null) {
+                    putExtra(EXTRA_DNS_PROVIDER, dnsProvider)
+                }
             }
         }
 
@@ -92,7 +97,8 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
                 startForegroundImmediate("Starting Vianshield…")
                 val configStr = intent.getStringExtra(EXTRA_CONFIG_STRING)
                     ?: WireGuardConfigParser.createDefaultTestConfig()
-                handleStartVpn(configStr, startId)
+                val dnsProvider = intent.getStringExtra(EXTRA_DNS_PROVIDER)
+                handleStartVpn(configStr, startId, dnsProvider)
             }
             ACTION_STOP_VPN -> {
                 handleStopVpn(startId)
@@ -133,7 +139,7 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
         }
     }
 
-    private fun handleStartVpn(rawConfig: String, startId: Int) {
+    private fun handleStartVpn(rawConfig: String, startId: Int, dnsProviderOverride: String? = null) {
         if (_vpnState.value is VpnState.Connected) {
             OperationalLogCatcher.warn(
                 LogCategory.VPN_LIFECYCLE,
@@ -192,11 +198,11 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
                     )
                 }
 
-                val singBoxJson = WireGuardConfigParser.toSingBoxJson(profile)
+                val singBoxJson = WireGuardConfigParser.toSingBoxJson(profile, dnsProviderOverride = dnsProviderOverride)
                 OperationalLogCatcher.info(
                     LogCategory.CONFIG_VALIDATION,
                     "VpnService",
-                    "[${OperationalLogCatcher.EVENT_CONFIG_GENERATION_STARTED}] STAGE 2: Generated sing-box configuration (gvisor stack, MTU=${profile.mtu})"
+                    "[${OperationalLogCatcher.EVENT_CONFIG_GENERATION_STARTED}] STAGE 2: Generated sing-box configuration (gvisor stack, MTU=${profile.mtu}, DNS=${profile.dnsServers.joinToString(",")}, provider=${dnsProviderOverride ?: "Profile Default"})"
                 )
 
                 // 3. Pre-validate configuration schema via Libbox.checkConfig (BitProxy patch 0007)
@@ -204,12 +210,13 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
                 if (checkResult.isFailure) {
                     val err = checkResult.exceptionOrNull()?.message ?: "Configuration validation failed"
                     StartupContextTracker.checkpointAttempt(OperationalLogCatcher.EVENT_CONFIG_VALIDATION_FAILED)
+                    val dnsDiagnostic = formatDnsValidationDiagnostics(singBoxJson, err)
                     OperationalLogCatcher.error(
                         LogCategory.CONFIG_VALIDATION,
                         "VpnService",
-                        "[${OperationalLogCatcher.EVENT_CONFIG_VALIDATION_FAILED}] STAGE 2 FAILED: $err"
+                        "[${OperationalLogCatcher.EVENT_CONFIG_VALIDATION_FAILED}] STAGE 2 FAILED (Pre-TUN validation): $err | $dnsDiagnostic"
                     )
-                    _vpnState.value = VpnState.Failed("ERR_CONFIG_INVALID", err)
+                    _vpnState.value = VpnState.Failed("ERR_CONFIG_INVALID", "$err ($dnsDiagnostic)")
                     stopForegroundSafely()
                     stopSelfResult(startId)
                     return@withLock
@@ -365,7 +372,12 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
             }
 
             for (dns in profile.dnsServers) {
-                builder.addDnsServer(dns)
+                val plainIp = WireGuardConfigParser.extractPlainIp(dns)
+                if (plainIp != null) {
+                    try {
+                        builder.addDnsServer(plainIp)
+                    } catch (_: Exception) {}
+                }
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -501,6 +513,29 @@ class VianshieldVpnService : VpnService(), SingBoxPlatformCallback {
     private fun updateNotification(statusText: String) {
         val manager = getSystemService(NotificationManager::class.java)
         manager?.notify(NOTIFICATION_ID, buildNotification(statusText))
+    }
+
+    private fun formatDnsValidationDiagnostics(configJson: String, errorMessage: String): String {
+        return try {
+            val json = JSONObject(configJson)
+            val dns = json.optJSONObject("dns")
+            val servers = dns?.optJSONArray("servers")
+            val serverSummaries = mutableListOf<String>()
+            if (servers != null) {
+                for (i in 0 until servers.length()) {
+                    val s = servers.optJSONObject(i)
+                    if (s != null) {
+                        val tag = s.optString("tag", "unknown")
+                        val type = s.optString("type", s.optString("address", "legacy"))
+                        val detour = s.optString("detour", "none")
+                        serverSummaries.add("[$i: tag=$tag, transport=$type, detour=$detour]")
+                    }
+                }
+            }
+            "Stage: STAGE 2 (Pre-TUN validation, failure occurred before TUN creation). Registered DNS servers: ${serverSummaries.joinToString("; ")}"
+        } catch (_: Exception) {
+            "Stage: STAGE 2 (Pre-TUN validation, failure occurred before TUN creation)."
+        }
     }
 
     private fun stopForegroundSafely() {

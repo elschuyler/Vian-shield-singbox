@@ -46,17 +46,23 @@ class SingBoxAdapter(
         fun isNativeAvailable(): Boolean {
             cachedNativeAvailable?.let { return it }
             val available = try {
-                val libboxCls = Class.forName(LIBBOX_CLASS)
-                Class.forName(PLATFORM_INTERFACE_CLASS)
+                // If running on host JVM test runners (Robolectric / JUnit on desktop),
+                // the Android ARM native shared library is not loaded.
+                if (android.os.Build.FINGERPRINT == "robolectric" ||
+                    System.getProperty("java.vm.name")?.contains("Dalvik", ignoreCase = true) != true) {
+                    false
+                } else {
+                    val libboxCls = Class.forName(LIBBOX_CLASS)
+                    Class.forName(PLATFORM_INTERFACE_CLASS)
 
-                // Verify that the native JNI library is actually linked and callable in this runtime.
-                // In a host JVM (Robolectric / JUnit on x86_64), libbox.so (ARM) is not linked,
-                // so attempting to invoke any native JNI method throws UnsatisfiedLinkError.
-                val versionMethod = libboxCls.methods.firstOrNull { it.name.equals("version", ignoreCase = true) && it.parameterCount == 0 }
-                if (versionMethod != null) {
-                    versionMethod.invoke(null)
+                    // Verify that the native JNI library is actually linked and callable in this runtime.
+                    // On device without libbox.so, calling JNI method throws UnsatisfiedLinkError.
+                    val versionMethod = libboxCls.methods.firstOrNull { it.name.equals("version", ignoreCase = true) && it.parameterCount == 0 }
+                    if (versionMethod != null) {
+                        versionMethod.invoke(null)
+                    }
+                    true
                 }
-                true
             } catch (_: Throwable) {
                 // Catches ClassNotFoundException, UnsatisfiedLinkError, LinkageError, ExceptionInInitializerError
                 false
@@ -164,6 +170,56 @@ class SingBoxAdapter(
                 val err = "Invalid configuration: missing required 'inbounds' and 'outbounds'/'endpoints'"
                 OperationalLogCatcher.error(LogCategory.CONFIG_VALIDATION, "SingBoxAdapter", err)
                 return Result.failure(IllegalArgumentException(err))
+            }
+
+            // Validate sing-box 1.14 DNS schema: reject legacy format & verify tag integrity
+            if (json.has("dns")) {
+                val dns = json.getJSONObject("dns")
+                if (dns.has("servers")) {
+                    val servers = dns.getJSONArray("servers")
+                    val serverTags = mutableSetOf<String>()
+                    for (i in 0 until servers.length()) {
+                        val server = servers.getJSONObject(i)
+                        if (server.has("address")) {
+                            val err = "decode config: dns.servers[$i]: legacy DNS server formats are deprecated in sing-box 1.12.0 and removed in sing-box 1.14.0"
+                            OperationalLogCatcher.error(LogCategory.CONFIG_VALIDATION, "SingBoxAdapter", err)
+                            return Result.failure(IllegalArgumentException(err))
+                        }
+                        if (!server.has("type")) {
+                            val err = "decode config: dns.servers[$i]: missing required 'type' field in DNS server definition"
+                            OperationalLogCatcher.error(LogCategory.CONFIG_VALIDATION, "SingBoxAdapter", err)
+                            return Result.failure(IllegalArgumentException(err))
+                        }
+                        if (!server.has("tag")) {
+                            val err = "decode config: dns.servers[$i]: missing required 'tag' field in DNS server definition"
+                            OperationalLogCatcher.error(LogCategory.CONFIG_VALIDATION, "SingBoxAdapter", err)
+                            return Result.failure(IllegalArgumentException(err))
+                        }
+                        serverTags.add(server.getString("tag"))
+                    }
+                    if (dns.has("final")) {
+                        val finalTag = dns.getString("final")
+                        if (!serverTags.contains(finalTag)) {
+                            val err = "decode config: dns.final: server '$finalTag' not found in dns.servers"
+                            OperationalLogCatcher.error(LogCategory.CONFIG_VALIDATION, "SingBoxAdapter", err)
+                            return Result.failure(IllegalArgumentException(err))
+                        }
+                    }
+                    if (dns.has("rules")) {
+                        val rules = dns.getJSONArray("rules")
+                        for (i in 0 until rules.length()) {
+                            val rule = rules.getJSONObject(i)
+                            if (rule.has("server")) {
+                                val ruleServer = rule.getString("server")
+                                if (!serverTags.contains(ruleServer)) {
+                                    val err = "decode config: dns.rules[$i]: server '$ruleServer' not found in dns.servers"
+                                    OperationalLogCatcher.error(LogCategory.CONFIG_VALIDATION, "SingBoxAdapter", err)
+                                    return Result.failure(IllegalArgumentException(err))
+                                }
+                            }
+                        }
+                    }
+                }
             }
         } catch (e: Exception) {
             val err = "Malformed sing-box JSON configuration: ${e.message}"

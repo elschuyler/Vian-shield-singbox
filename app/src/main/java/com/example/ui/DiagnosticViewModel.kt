@@ -15,7 +15,6 @@ import com.example.logging.LogSeverity
 import com.example.logging.OperationalLogCatcher
 import com.example.logging.CrashReporter
 import com.example.logging.LogExporter
-import com.example.vpn.VianshieldVpnService
 import com.example.vpn.VpnLifecycleController
 import com.example.vpn.VpnState
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -47,7 +46,7 @@ class DiagnosticViewModel(application: Application) : AndroidViewModel(applicati
 
     private val lifecycleController = VpnLifecycleController(application)
 
-    val vpnState: StateFlow<VpnState> = VianshieldVpnService.vpnState
+    val vpnState: StateFlow<VpnState> = VpnLifecycleController.vpnState
     val rawLogEvents = OperationalLogCatcher.events
     val isLoggingEnabled = OperationalLogCatcher.isLoggingEnabled
 
@@ -227,7 +226,7 @@ class DiagnosticViewModel(application: Application) : AndroidViewModel(applicati
                 )
             }
             is VpnState.Stopped, is VpnState.Failed, is VpnState.PermissionRequired -> {
-                lifecycleController.requestStartVpn(_currentConfig.value, permissionLauncher)
+                lifecycleController.requestStartVpn(_currentConfig.value, permissionLauncher, dnsProvider = _dnsProvider.value)
             }
         }
     }

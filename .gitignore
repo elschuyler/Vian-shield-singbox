@@ -23,3 +23,6 @@ debug.keystore.base64
 *.apk
 *.aab
 /dist/
+/BitProxy-main/
+/checkpoint_phase1_19/
+/reference/

@@ -255,7 +255,8 @@ object WireGuardConfigParser {
     fun toSingBoxJson(
         profile: WireGuardProfile,
         @Suppress("UNUSED_PARAMETER") cacheFilePath: String? = null,
-        @Suppress("UNUSED_PARAMETER") enableCacheFile: Boolean = false
+        @Suppress("UNUSED_PARAMETER") enableCacheFile: Boolean = false,
+        dnsProviderOverride: String? = null
     ): String {
         val root = JSONObject()
 
@@ -266,19 +267,40 @@ object WireGuardConfigParser {
         logObj.put("timestamp", true)
         root.put("log", logObj)
 
-        // DNS configuration with detour to WireGuard outbound
+        // DNS configuration with detour to WireGuard outbound (sing-box v1.14.4 modern schema)
+        val effectiveDns = resolveDnsServers(dnsProviderOverride, profile.dnsServers)
         val dnsObj = JSONObject()
         val serversArray = JSONArray()
-        for (dns in profile.dnsServers) {
-            val dnsServer = JSONObject()
-            val sanitizedTag = "dns-remote-${dns.replace(":", "_").replace(".", "_")}"
-            dnsServer.put("tag", sanitizedTag)
-            dnsServer.put("address", dns)
-            dnsServer.put("detour", "wg-out")
+        val existingTags = mutableSetOf<String>()
+
+        for ((idx, dns) in effectiveDns.withIndex()) {
+            val dnsServer = parseDnsServerObject(dns, detour = "wg-out", tagIndex = idx)
+            var tag = dnsServer.getString("tag")
+            var suffix = 1
+            while (existingTags.contains(tag)) {
+                tag = "${tag}_$suffix"
+                suffix++
+            }
+            dnsServer.put("tag", tag)
+            existingTags.add(tag)
             serversArray.put(dnsServer)
         }
+
+        if (serversArray.length() == 0) {
+            val fallback = JSONObject().apply {
+                put("tag", "dns-remote-fallback-0")
+                put("type", "udp")
+                put("server", "1.1.1.1")
+                put("server_port", 53)
+                put("detour", "wg-out")
+            }
+            serversArray.put(fallback)
+        }
+
         dnsObj.put("servers", serversArray)
         dnsObj.put("strategy", "prefer_ipv4")
+        val primaryTag = serversArray.getJSONObject(0).getString("tag")
+        dnsObj.put("final", primaryTag)
         root.put("dns", dnsObj)
 
         // Inbound: TUN interface with "gvisor" stack (official sing-box Android userspace stack)
@@ -399,5 +421,163 @@ object WireGuardConfigParser {
             Endpoint = 198.51.100.1:51820
             AllowedIPs = 0.0.0.0/0
         """.trimIndent()
+    }
+
+    /**
+     * Resolves DNS provider name (e.g. from UI selector) to a list of server addresses or URLs.
+     */
+    fun resolveDnsServers(providerName: String?, profileDns: List<String>): List<String> {
+        val trimmed = providerName?.trim()
+        if (trimmed.isNullOrEmpty() || trimmed.contains("Profile Default", ignoreCase = true)) {
+            return profileDns.ifEmpty { listOf("1.1.1.1") }
+        }
+        return when {
+            trimmed.contains("Cloudflare", ignoreCase = true) -> listOf("1.1.1.1", "1.0.0.1")
+            trimmed.contains("Google", ignoreCase = true) -> listOf("8.8.8.8", "8.8.4.4")
+            trimmed.contains("Quad9", ignoreCase = true) -> listOf("9.9.9.9", "149.112.112.112")
+            trimmed.contains("AdGuard", ignoreCase = true) -> listOf("94.140.14.14", "94.140.15.15")
+            else -> listOf(trimmed)
+        }
+    }
+
+    /**
+     * Extracts a plain IP address (v4 or v6) from a DNS address string,
+     * stripping schemes and ports. Returns null if not a parseable IP.
+     */
+    fun extractPlainIp(dnsString: String): String? {
+        val trimmed = dnsString.trim()
+            .removePrefix("udp://")
+            .removePrefix("tcp://")
+            .removePrefix("tls://")
+            .removePrefix("https://")
+
+        if (trimmed.startsWith("[")) {
+            val endBracket = trimmed.indexOf("]")
+            if (endBracket > 1) {
+                return trimmed.substring(1, endBracket)
+            }
+        }
+        if (trimmed.count { it == '.' } == 3 && trimmed.contains(":")) {
+            return trimmed.substringBefore(":")
+        }
+        val cleanHost = trimmed.substringBefore("/").substringBefore(":")
+        return if (cleanHost.isNotEmpty() && !cleanHost.matches(Regex(".*[a-zA-Z].*"))) cleanHost else null
+    }
+
+    /**
+     * Parses a DNS string (plain IPv4/IPv6, UDP, TCP, DoT, DoH) into a modern
+     * typed sing-box 1.14 DNS server JSON object.
+     *
+     * In sing-box 1.14:
+     * - Legacy "address" field is completely removed.
+     * - Every server MUST declare "type", "tag", "server", "server_port", and "detour".
+     */
+    fun parseDnsServerObject(rawDns: String, detour: String = "wg-out", tagIndex: Int = 0): JSONObject {
+        val trimmed = rawDns.trim()
+        val dnsServer = JSONObject()
+
+        when {
+            trimmed.startsWith("https://", ignoreCase = true) -> {
+                dnsServer.put("type", "https")
+                val withoutScheme = trimmed.substring(8)
+                val pathIdx = withoutScheme.indexOf("/")
+                val hostPort = if (pathIdx != -1) withoutScheme.substring(0, pathIdx) else withoutScheme
+                val rawPath = if (pathIdx != -1) withoutScheme.substring(pathIdx) else "/dns-query"
+                val path = if (rawPath.isBlank()) "/dns-query" else rawPath
+
+                val (host, port) = parseHostAndPort(hostPort, 443)
+                val sanitizedHost = sanitizeTag(host)
+                dnsServer.put("tag", "dns-https-$sanitizedHost-$tagIndex")
+                dnsServer.put("server", host)
+                dnsServer.put("server_port", port)
+                dnsServer.put("path", path)
+                if (host.matches(Regex(".*[a-zA-Z].*"))) {
+                    val tlsObj = JSONObject().apply {
+                        put("enabled", true)
+                        put("server_name", host)
+                    }
+                    dnsServer.put("tls", tlsObj)
+                }
+            }
+            trimmed.startsWith("tls://", ignoreCase = true) -> {
+                dnsServer.put("type", "tls")
+                val withoutScheme = trimmed.substring(6)
+                val hostPort = withoutScheme.substringBefore("/")
+                val (host, port) = parseHostAndPort(hostPort, 853)
+                val sanitizedHost = sanitizeTag(host)
+                dnsServer.put("tag", "dns-tls-$sanitizedHost-$tagIndex")
+                dnsServer.put("server", host)
+                dnsServer.put("server_port", port)
+                if (host.matches(Regex(".*[a-zA-Z].*"))) {
+                    val tlsObj = JSONObject().apply {
+                        put("enabled", true)
+                        put("server_name", host)
+                    }
+                    dnsServer.put("tls", tlsObj)
+                }
+            }
+            trimmed.startsWith("tcp://", ignoreCase = true) -> {
+                dnsServer.put("type", "tcp")
+                val withoutScheme = trimmed.substring(6)
+                val (host, port) = parseHostAndPort(withoutScheme, 53)
+                val sanitizedHost = sanitizeTag(host)
+                dnsServer.put("tag", "dns-tcp-$sanitizedHost-$tagIndex")
+                dnsServer.put("server", host)
+                dnsServer.put("server_port", port)
+            }
+            trimmed.startsWith("udp://", ignoreCase = true) -> {
+                dnsServer.put("type", "udp")
+                val withoutScheme = trimmed.substring(6)
+                val (host, port) = parseHostAndPort(withoutScheme, 53)
+                val sanitizedHost = sanitizeTag(host)
+                dnsServer.put("tag", "dns-udp-$sanitizedHost-$tagIndex")
+                dnsServer.put("server", host)
+                dnsServer.put("server_port", port)
+            }
+            trimmed.equals("local", ignoreCase = true) -> {
+                dnsServer.put("type", "local")
+                dnsServer.put("tag", "dns-local-$tagIndex")
+                return dnsServer
+            }
+            else -> {
+                // Default plain UDP resolver (e.g. 1.1.1.1, [2606:4700::1111]:53)
+                dnsServer.put("type", "udp")
+                val (host, port) = parseHostAndPort(trimmed, 53)
+                val sanitizedHost = sanitizeTag(host)
+                dnsServer.put("tag", "dns-remote-$sanitizedHost-$tagIndex")
+                dnsServer.put("server", host)
+                dnsServer.put("server_port", port)
+            }
+        }
+
+        dnsServer.put("detour", detour)
+        return dnsServer
+    }
+
+    private fun parseHostAndPort(input: String, defaultPort: Int): Pair<String, Int> {
+        val str = input.trim()
+        if (str.startsWith("[")) {
+            val endBracket = str.indexOf("]")
+            if (endBracket != -1) {
+                val ip = str.substring(1, endBracket)
+                val remaining = str.substring(endBracket + 1)
+                val port = if (remaining.startsWith(":")) {
+                    remaining.substring(1).toIntOrNull() ?: defaultPort
+                } else {
+                    defaultPort
+                }
+                return Pair(ip, port)
+            }
+        }
+        if (str.count { it == ':' } == 1) {
+            val parts = str.split(":")
+            val port = parts[1].toIntOrNull() ?: defaultPort
+            return Pair(parts[0], port)
+        }
+        return Pair(str, defaultPort)
+    }
+
+    private fun sanitizeTag(raw: String): String {
+        return raw.replace(Regex("[^a-zA-Z0-9_-]"), "_").trim('_').ifEmpty { "server" }
     }
 }

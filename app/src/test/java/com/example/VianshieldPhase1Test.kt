@@ -1,6 +1,8 @@
 package com.example
 
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import androidx.test.core.app.ApplicationProvider
 import com.example.config.WireGuardConfigParser
 import com.example.engine.SingBoxAdapter
@@ -565,11 +567,29 @@ class VianshieldPhase1Test {
         val packageManager = context.packageManager
         assertNotNull(packageManager)
 
-        // Verify that android:foregroundServiceType is declared and compatible
-        val serviceInfo = packageManager.getServiceInfo(
-            android.content.ComponentName(context, com.example.vpn.VianshieldVpnService::class.java),
-            0
+        // 1. Verify Application ID is correctly configured for the ARM64 build
+        assertEquals("com.aistudio.vianshield.vxnpqk", context.packageName)
+
+        // 2. Verify VPN service registration and intent filter resolution in manifest
+        val vpnIntent = Intent(android.net.VpnService.SERVICE_INTERFACE).setPackage(context.packageName)
+        val resolveList = packageManager.queryIntentServices(vpnIntent, PackageManager.GET_SERVICES)
+        val serviceInfo = resolveList.firstOrNull()?.serviceInfo ?: runCatching {
+            packageManager.getServiceInfo(
+                android.content.ComponentName(context, io.nekohasekai.sfa.bg.VPNService::class.java),
+                PackageManager.GET_SERVICES
+            )
+        }.getOrNull()
+
+        assertNotNull("VPNService must be declared in AndroidManifest with android.net.VpnService intent filter", serviceInfo)
+        assertEquals(
+            "Resolved service class must be official SFA VPNService",
+            io.nekohasekai.sfa.bg.VPNService::class.java.name,
+            serviceInfo?.name
         )
-        assertNotNull("VianshieldVpnService must be declared in AndroidManifest", serviceInfo)
+        assertEquals(
+            "Service must require BIND_VPN_SERVICE permission",
+            "android.permission.BIND_VPN_SERVICE",
+            serviceInfo?.permission
+        )
     }
 }
